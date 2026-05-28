@@ -2,14 +2,18 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>EduSegura LUMINA — Dashboard en Vivo</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="EduSegura">
+<meta name="theme-color" content="#1d4ed8">
+<title>EduSegura LUMINA</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 
-<!-- Firebase SDK -->
+<!-- Firebase -->
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-  import { getDatabase, ref, onValue, push, set, serverTimestamp }
+  import { getDatabase, ref, onValue, push, set }
     from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 
   const firebaseConfig = {
@@ -25,17 +29,14 @@
   const app = initializeApp(firebaseConfig);
   const db  = getDatabase(app);
 
-  // ── Helpers ──
   function fmt(ts) {
     if (!ts) return "—";
-    const d = new Date(ts);
-    return d.toLocaleTimeString("es-AR", { hour:"2-digit", minute:"2-digit", second:"2-digit" });
+    return new Date(ts).toLocaleTimeString("es-AR", { hour:"2-digit", minute:"2-digit" });
   }
 
   function fmtFull(ts) {
     if (!ts) return "—";
-    const d = new Date(ts);
-    return d.toLocaleString("es-AR", { day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit" });
+    return new Date(ts).toLocaleString("es-AR", { day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit" });
   }
 
   function zonaNombre(z) {
@@ -45,163 +46,150 @@
   }
 
   function estadoBadge(e) {
-    if (e === "activa")       return `<span class="badge danger"><span class="badge-dot"></span>Activa</span>`;
-    if (e === "resuelta")     return `<span class="badge success"><span class="badge-dot"></span>Resuelta</span>`;
-    if (e === "sin_confirmar")return `<span class="badge warning"><span class="badge-dot"></span>Sin confirmar</span>`;
-    return `<span class="badge info"><span class="badge-dot"></span>${e}</span>`;
+    const map = {
+      activa:        `<span class="badge danger">Activa</span>`,
+      resuelta:      `<span class="badge success">Resuelta</span>`,
+      sin_confirmar: `<span class="badge warning">Sin confirmar</span>`,
+    };
+    return map[e] || `<span class="badge info">${e}</span>`;
   }
 
-  // ── Escuchar alertas ──
+  // Alertas
   onValue(ref(db, "alertas"), snap => {
     const data = snap.val() || {};
     const lista = Object.entries(data)
-      .map(([k,v]) => ({ id: k, ...v }))
+      .map(([k,v]) => ({ id:k, ...v }))
       .sort((a,b) => (b.timestamp||0) - (a.timestamp||0));
 
-    // KPI alertas hoy
     const hoy = new Date(); hoy.setHours(0,0,0,0);
-    const hoyCount = lista.filter(a => a.timestamp >= hoy.getTime()).length;
-    document.getElementById("kpi-alertas-hoy").textContent = hoyCount;
-
-    // KPI mes
     const mes = new Date(); mes.setDate(1); mes.setHours(0,0,0,0);
-    const mesCount = lista.filter(a => a.timestamp >= mes.getTime()).length;
-    document.getElementById("kpi-alertas-mes").textContent = mesCount;
 
-    // Última alerta
-    if (lista.length > 0) {
-      const ult = lista[0];
-      document.getElementById("ultima-alerta").textContent = fmtFull(ult.timestamp);
-      document.getElementById("ultima-zona").textContent = zonaNombre(ult.zona);
+    const hoyC = lista.filter(a => a.timestamp >= hoy.getTime()).length;
+    const mesC = lista.filter(a => a.timestamp >= mes.getTime()).length;
+    const actC = lista.filter(a => a.estado === "activa").length;
 
-      // Alerta activa — banner
-      if (ult.estado === "activa") {
-        document.getElementById("alert-banner").style.display = "flex";
-        document.getElementById("banner-zona").textContent = zonaNombre(ult.zona);
-        document.getElementById("banner-hora").textContent = fmt(ult.timestamp);
-        document.getElementById("banner-id").dataset.id = ult.id;
-      } else {
-        document.getElementById("alert-banner").style.display = "none";
-      }
+    document.getElementById("kpi-hoy").textContent  = hoyC;
+    document.getElementById("kpi-mes").textContent  = mesC;
+    document.getElementById("kpi-act").textContent  = actC;
+    document.getElementById("nav-badge").textContent = actC > 0 ? actC : "";
+    document.getElementById("nav-badge").style.display = actC > 0 ? "flex" : "none";
+
+    // Banner
+    const activa = lista.find(a => a.estado === "activa");
+    const banner = document.getElementById("alert-banner");
+    if (activa) {
+      banner.style.display = "flex";
+      document.getElementById("banner-zona").textContent = zonaNombre(activa.zona);
+      document.getElementById("banner-hora").textContent = fmt(activa.timestamp);
+      document.getElementById("banner-id").dataset.id = activa.id;
+      // Vibrar celular
+      if (navigator.vibrate) navigator.vibrate([300,100,300,100,300]);
+    } else {
+      banner.style.display = "none";
     }
 
-    // Tabla historial
-    const tbody = document.getElementById("tabla-alertas");
+    // Cards de alertas recientes
+    const feed = document.getElementById("alert-feed");
     if (lista.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--text3);padding:24px;font-family:'DM Mono',monospace;font-size:12px;">Sin alertas registradas</td></tr>`;
+      feed.innerHTML = `<div class="empty-state"><div class="empty-icon">📡</div><div>Sin alertas registradas</div></div>`;
       return;
     }
 
-    tbody.innerHTML = lista.slice(0,20).map(a => `
-      <tr>
-        <td><span style="font-family:'DM Mono',monospace;font-size:12px;">${fmt(a.timestamp)}</span></td>
-        <td>${zonaNombre(a.zona)}</td>
-        <td><span style="font-family:'DM Mono',monospace;font-size:11px;color:var(--text3);">${a.dispositivo || "—"}</span></td>
-        <td>${a.preceptor || "—"}</td>
-        <td>${estadoBadge(a.estado)}</td>
-        <td>
-          ${a.estado === "activa"
-            ? `<button class="btn-sm btn-success" onclick="resolverAlerta('${a.id}')">✅ Resolver</button>`
-            : `<span style="color:var(--text3);font-size:11px;">—</span>`
+    feed.innerHTML = lista.slice(0,15).map(a => `
+      <div class="alert-card ${a.estado === 'activa' ? 'alert-card-active' : ''}">
+        <div class="alert-card-left">
+          <div class="alert-zona">${zonaNombre(a.zona)}</div>
+          <div class="alert-meta">${fmtFull(a.timestamp)} · ${a.dispositivo || "—"}</div>
+          <div class="alert-preceptor">👤 ${a.preceptor || "—"}</div>
+        </div>
+        <div class="alert-card-right">
+          ${estadoBadge(a.estado)}
+          ${a.estado === 'activa'
+            ? `<button class="btn-resolve" onclick="resolverAlerta('${a.id}')">✅ Resolver</button>`
+            : ''
           }
-        </td>
-      </tr>
+        </div>
+      </div>
     `).join("");
   });
 
-  // ── Escuchar dispositivos ──
+  // Dispositivos
   onValue(ref(db, "dispositivos"), snap => {
     const data = snap.val() || {};
-    const devs = {
-      master: data.master || {},
-      bano:   data.bano   || {},
-      porton: data.porton || {}
-    };
-
     const ahora = Date.now();
     let online = 0;
 
-    Object.entries(devs).forEach(([key, dev]) => {
+    ["master","bano","porton"].forEach(key => {
+      const dev = data[key] || {};
       const activo = dev.timestamp && (ahora - dev.timestamp) < 60000;
       if (activo) online++;
 
       const el = document.getElementById(`dev-${key}`);
       if (!el) return;
 
-      el.querySelector(".dev-status").className = `badge ${activo ? "success" : "danger"}`;
-      el.querySelector(".dev-status").innerHTML = `<span class="badge-dot"></span>${activo ? "Online" : "Offline"}`;
-      el.querySelector(".dev-last").textContent = dev.timestamp ? `hace ${Math.round((ahora - dev.timestamp)/1000)}s` : "Sin datos";
-
-      // Señal
-      const rssi = dev.rssi || -100;
-      const bars = el.querySelectorAll(".bar");
-      const nivel = rssi > -60 ? 4 : rssi > -70 ? 3 : rssi > -80 ? 2 : 1;
-      bars.forEach((b,i) => b.classList.toggle("active", i < nivel));
+      el.querySelector(".dev-dot").className = `dev-dot ${activo ? "online" : "offline"}`;
+      el.querySelector(".dev-estado").textContent = activo ? "Online" : "Offline";
+      el.querySelector(".dev-last").textContent = dev.timestamp
+        ? `hace ${Math.round((ahora - dev.timestamp)/1000)}s` : "Sin datos";
     });
 
-    document.getElementById("kpi-dispositivos").textContent = `${online}/3`;
-    document.getElementById("kpi-disp-color").className = `kpi-value ${online === 3 ? "green" : online > 0 ? "warning" : "red"}`;
+    document.getElementById("kpi-disp").textContent = `${online}/3`;
   });
 
-  // ── Resolver alerta ──
+  // Resolver
   window.resolverAlerta = async (id) => {
     await set(ref(db, `alertas/${id}/estado`), "resuelta");
-    document.getElementById("alert-banner").style.display = "none";
   };
 
-  // ── Resolver desde banner ──
   window.resolverDesde = () => {
     const id = document.getElementById("banner-id").dataset.id;
     if (id) resolverAlerta(id);
   };
 
-  // ── Simular alerta (para pruebas) ──
+  // Simular
   window.simularAlerta = async () => {
-    const zonas = ["BANO_TALLERES", "PORTON"];
-    const zona = zonas[Math.floor(Math.random() * zonas.length)];
-    const preceptores = ["Juan Pérez", "María López", "Carlos Gil"];
-    const preceptor = preceptores[Math.floor(Math.random() * preceptores.length)];
-    const dispositivos = { BANO_TALLERES: "ZY8266MOD", PORTON: "ESP32-WROOM" };
-
-    await push(ref(db, "alertas"), {
-      zona,
-      dispositivo: dispositivos[zona],
-      preceptor,
-      estado: "activa",
-      timestamp: Date.now()
+    const zonas = ["BANO_TALLERES","PORTON"];
+    const zona = zonas[Math.floor(Math.random()*zonas.length)];
+    const preceptores = ["Juan Pérez","María López","Carlos Gil"];
+    const preceptor = preceptores[Math.floor(Math.random()*preceptores.length)];
+    const dispositivos = { BANO_TALLERES:"ZY8266MOD", PORTON:"ESP32-WROOM" };
+    await push(ref(db,"alertas"), {
+      zona, dispositivo: dispositivos[zona],
+      preceptor, estado:"activa", timestamp: Date.now()
     });
-
-    // Telegram simulado — solo log
-    console.log(`🚨 Alerta simulada: ${zona} → ${preceptor}`);
   };
 
-  // ── Registrar heartbeat master (simulado) ──
+  // Heartbeat
   setInterval(() => {
-    set(ref(db, "dispositivos/master"), {
-      nombre: "Master Sala Profes.",
-      mac: "D8:BF:C0:F6:9E:F7",
-      rssi: -45,
-      timestamp: Date.now()
+    set(ref(db,"dispositivos/master"), {
+      nombre:"Master Sala Profes.", mac:"D8:BF:C0:F6:9E:F7",
+      rssi:-45, timestamp: Date.now()
     });
   }, 30000);
 
-  // Hora en vivo
+  // Hora
   setInterval(() => {
     const now = new Date();
     document.getElementById("hora-live").textContent =
-      now.toLocaleString("es-AR", { weekday:"long", day:"2-digit", month:"long", hour:"2-digit", minute:"2-digit" });
+      now.toLocaleString("es-AR", { weekday:"short", day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit" });
   }, 1000);
 
-  console.log("✅ Firebase conectado — EduSegura LUMINA");
+  // Navegación tabs
+  window.showTab = (tab) => {
+    document.querySelectorAll(".tab-content").forEach(t => t.style.display = "none");
+    document.querySelectorAll(".nav-tab").forEach(t => t.classList.remove("active"));
+    document.getElementById(`tab-${tab}`).style.display = "block";
+    document.getElementById(`nav-${tab}`).classList.add("active");
+  };
 </script>
 
 <style>
+/* ── TEMA AUTOMÁTICO ── */
 :root {
   --bg: #f0f4f8;
   --surface: #ffffff;
   --surface2: #f8fafc;
   --border: #e2e8f0;
-  --border2: #cbd5e1;
   --text: #0f172a;
   --text2: #475569;
   --text3: #94a3b8;
@@ -215,632 +203,764 @@
   --warning-light: #fffbeb;
   --purple: #8b5cf6;
   --purple-light: #f5f3ff;
-  --sidebar-w: 240px;
   --shadow: 0 1px 3px rgba(0,0,0,0.06), 0 4px 16px rgba(0,0,0,0.04);
-  --shadow-md: 0 4px 24px rgba(0,0,0,0.08);
+  --nav-h: 64px;
 }
 
-* { margin:0; padding:0; box-sizing:border-box; }
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0a0e1a;
+    --surface: #0f1629;
+    --surface2: #141e35;
+    --border: #1e2d4a;
+    --text: #e2e8f0;
+    --text2: #94a3b8;
+    --text3: #4a6080;
+    --accent-light: rgba(29,78,216,0.15);
+    --danger-light: rgba(239,68,68,0.12);
+    --success-light: rgba(34,197,94,0.12);
+    --warning-light: rgba(245,158,11,0.12);
+    --purple-light: rgba(139,92,246,0.12);
+    --shadow: 0 1px 3px rgba(0,0,0,0.3), 0 4px 16px rgba(0,0,0,0.2);
+  }
+}
+
+* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
 
 body {
-  font-family: 'DM Sans', sans-serif;
-  background: var(--bg);
-  color: var(--text);
-  display: flex;
-  min-height: 100vh;
-  font-size: 14px;
+  font-family:'DM Sans',sans-serif;
+  background:var(--bg);
+  color:var(--text);
+  font-size:14px;
+  min-height:100vh;
+  padding-bottom:var(--nav-h);
 }
 
-/* SIDEBAR */
-.sidebar {
-  width: var(--sidebar-w);
-  background: var(--text);
-  color: #fff;
-  display: flex;
-  flex-direction: column;
-  position: fixed;
-  top:0; left:0; bottom:0;
-  z-index: 100;
+/* ── TOPBAR ── */
+.topbar {
+  background:var(--surface);
+  border-bottom:1px solid var(--border);
+  padding:12px 16px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  position:sticky;
+  top:0;
+  z-index:100;
+  box-shadow:var(--shadow);
 }
 
-.sidebar-logo {
-  padding: 24px 20px 20px;
-  border-bottom: 1px solid rgba(255,255,255,0.08);
+.topbar-logo {
+  display:flex;
+  align-items:center;
+  gap:10px;
 }
-
-.logo-badge { display:flex; align-items:center; gap:10px; }
 
 .logo-icon {
   width:36px; height:36px;
-  background: var(--accent);
+  background:var(--accent);
   border-radius:10px;
   display:flex; align-items:center; justify-content:center;
   font-size:18px;
+  flex-shrink:0;
 }
 
-.logo-text { font-size:13px; font-weight:700; }
-.logo-sub { font-size:10px; color:rgba(255,255,255,0.4); font-family:'DM Mono',monospace; letter-spacing:1px; }
+.logo-text { font-size:15px; font-weight:700; }
+.logo-sub  { font-size:10px; color:var(--text3); font-family:'DM Mono',monospace; }
 
-.sidebar-nav { flex:1; padding:16px 12px; display:flex; flex-direction:column; gap:2px; }
+.topbar-right { display:flex; align-items:center; gap:8px; }
 
-.nav-section {
-  font-size:10px; font-weight:600; color:rgba(255,255,255,0.3);
-  letter-spacing:1.5px; text-transform:uppercase;
-  padding:12px 8px 6px; font-family:'DM Mono',monospace;
-}
-
-.nav-item {
-  display:flex; align-items:center; gap:10px;
-  padding:9px 10px; border-radius:8px; cursor:pointer;
-  transition:all 0.15s; color:rgba(255,255,255,0.55);
-  font-size:13px; font-weight:500;
-}
-
-.nav-item:hover { background:rgba(255,255,255,0.06); color:rgba(255,255,255,0.85); }
-.nav-item.active { background:var(--accent); color:#fff; }
-.nav-icon { font-size:16px; width:20px; text-align:center; }
-
-.nav-badge {
-  margin-left:auto; background:var(--danger); color:#fff;
-  font-size:10px; font-weight:700; padding:1px 6px;
-  border-radius:20px; font-family:'DM Mono',monospace;
-}
-
-.firebase-badge {
-  margin: 12px; background:rgba(255,160,0,0.1);
-  border:1px solid rgba(255,160,0,0.2); border-radius:8px;
-  padding:8px 10px; display:flex; align-items:center; gap:8px;
-  font-size:10px; color:rgba(255,200,0,0.8);
+.hora-chip {
+  background:var(--surface2);
+  border:1px solid var(--border);
+  border-radius:20px;
+  padding:4px 10px;
+  font-size:11px;
   font-family:'DM Mono',monospace;
+  color:var(--text2);
 }
 
-.fb-dot { width:6px; height:6px; border-radius:50%; background:#ffa000; animation:pulse 2s infinite; }
-
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
-
-.sidebar-footer {
-  padding:16px 12px;
-  border-top:1px solid rgba(255,255,255,0.08);
+.btn-sim {
+  background:var(--danger);
+  color:#fff;
+  border:none;
+  border-radius:8px;
+  padding:8px 12px;
+  font-size:12px;
+  font-weight:700;
+  cursor:pointer;
+  font-family:'DM Sans',sans-serif;
+  white-space:nowrap;
 }
 
-.user-card {
-  display:flex; align-items:center; gap:10px;
-  padding:8px 10px; border-radius:8px; cursor:pointer;
-}
-
-.user-card:hover { background:rgba(255,255,255,0.06); }
-
-.user-avatar {
-  width:32px; height:32px;
-  background:linear-gradient(135deg,var(--accent),#0ea5e9);
-  border-radius:50%; display:flex; align-items:center;
-  justify-content:center; font-size:13px; font-weight:700;
-}
-
-.user-name { font-size:12px; font-weight:600; color:rgba(255,255,255,0.85); }
-.user-role { font-size:10px; color:rgba(255,255,255,0.35); font-family:'DM Mono',monospace; }
-
-/* MAIN */
-.main { margin-left:var(--sidebar-w); flex:1; display:flex; flex-direction:column; }
-
-/* TOPBAR */
-.topbar {
-  background:var(--surface); border-bottom:1px solid var(--border);
-  padding:0 28px; height:60px; display:flex;
-  align-items:center; justify-content:space-between;
-  position:sticky; top:0; z-index:50;
-}
-
-.page-title { font-size:16px; font-weight:700; letter-spacing:-0.3px; }
-.page-sub { font-size:11px; color:var(--text3); font-family:'DM Mono',monospace; }
-
-.topbar-right { display:flex; align-items:center; gap:12px; }
-
-.system-status {
-  display:flex; align-items:center; gap:6px;
-  background:var(--success-light); border:1px solid #bbf7d0;
-  border-radius:20px; padding:4px 12px;
-  font-size:11px; font-weight:600; color:#166534;
-  font-family:'DM Mono',monospace;
-}
-
-.status-pulse { width:7px; height:7px; background:var(--success); border-radius:50%; animation:pulse 2s infinite; }
-
-.top-btn {
-  width:36px; height:36px; background:var(--surface2);
-  border:1px solid var(--border); border-radius:8px;
-  display:flex; align-items:center; justify-content:center;
-  cursor:pointer; font-size:16px; transition:all 0.15s;
-}
-
-.top-btn:hover { background:var(--border); }
-
-/* ALERT BANNER */
+/* ── ALERT BANNER ── */
 .alert-banner {
   display:none;
-  background:var(--danger); color:#fff;
-  padding:12px 28px;
-  align-items:center; justify-content:space-between;
+  background:var(--danger);
+  color:#fff;
+  padding:12px 16px;
+  flex-direction:column;
+  gap:8px;
   animation:slideDown 0.3s ease;
+  position:sticky;
+  top:61px;
+  z-index:99;
 }
 
-@keyframes slideDown { from{transform:translateY(-100%)} to{transform:translateY(0)} }
+@keyframes slideDown {
+  from { transform:translateY(-100%); }
+  to   { transform:translateY(0); }
+}
 
-.banner-left { display:flex; align-items:center; gap:12px; }
-.banner-icon { font-size:24px; animation:shake 0.5s infinite; }
+.banner-title {
+  font-size:15px;
+  font-weight:700;
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+
+.banner-shake { animation:shake 0.5s infinite; display:inline-block; }
 
 @keyframes shake {
-  0%,100%{transform:rotate(0)} 25%{transform:rotate(-10deg)} 75%{transform:rotate(10deg)}
+  0%,100%{transform:rotate(0)} 25%{transform:rotate(-15deg)} 75%{transform:rotate(15deg)}
 }
 
-.banner-title { font-size:15px; font-weight:700; }
-.banner-sub { font-size:12px; opacity:0.85; font-family:'DM Mono',monospace; }
-.banner-right { display:flex; gap:10px; }
+.banner-sub {
+  font-size:12px;
+  opacity:0.85;
+  font-family:'DM Mono',monospace;
+}
 
-.btn-banner {
-  padding:8px 16px; border-radius:8px; border:none;
-  font-size:12px; font-weight:700; cursor:pointer;
+.btn-banner-resolve {
+  background:#fff;
+  color:var(--danger);
+  border:none;
+  border-radius:8px;
+  padding:10px 16px;
+  font-size:13px;
+  font-weight:700;
+  cursor:pointer;
   font-family:'DM Sans',sans-serif;
+  width:100%;
 }
 
-.btn-white { background:#fff; color:var(--danger); }
-.btn-white:hover { background:#fef2f2; }
-.btn-outline { background:transparent; color:#fff; border:1px solid rgba(255,255,255,0.4); }
+/* ── CONTENT ── */
+.content {
+  padding:16px;
+  max-width:900px;
+  margin:0 auto;
+}
 
-/* CONTENT */
-.content { padding:24px 28px; display:flex; flex-direction:column; gap:20px; }
+/* ── KPI GRID ── */
+.kpi-grid {
+  display:grid;
+  grid-template-columns:repeat(2,1fr);
+  gap:12px;
+  margin-bottom:16px;
+}
 
-/* KPI */
-.kpi-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; }
+@media (min-width:600px) {
+  .kpi-grid { grid-template-columns:repeat(4,1fr); }
+}
 
 .kpi-card {
-  background:var(--surface); border:1px solid var(--border);
-  border-radius:14px; padding:18px 20px; box-shadow:var(--shadow);
-  display:flex; flex-direction:column; gap:12px;
-  transition:transform 0.2s, box-shadow 0.2s;
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:14px;
+  padding:14px;
+  box-shadow:var(--shadow);
   animation:fadeUp 0.4s ease both;
 }
 
-.kpi-card:hover { transform:translateY(-2px); box-shadow:var(--shadow-md); }
 .kpi-card:nth-child(1){animation-delay:0.05s}
 .kpi-card:nth-child(2){animation-delay:0.10s}
 .kpi-card:nth-child(3){animation-delay:0.15s}
 .kpi-card:nth-child(4){animation-delay:0.20s}
 
-@keyframes fadeUp { from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:translateY(0)} }
-
-.kpi-top { display:flex; align-items:center; justify-content:space-between; }
-.kpi-label { font-size:11px; font-weight:600; color:var(--text2); text-transform:uppercase; letter-spacing:0.5px; }
-
-.kpi-icon { width:36px; height:36px; border-radius:10px; display:flex; align-items:center; justify-content:center; font-size:18px; }
-.kpi-icon.blue { background:var(--accent-light); }
-.kpi-icon.red  { background:var(--danger-light); }
-.kpi-icon.green{ background:var(--success-light); }
-.kpi-icon.purple{background:var(--purple-light); }
-
-.kpi-value { font-size:32px; font-weight:700; letter-spacing:-1px; line-height:1; transition:all 0.3s; }
-.kpi-value.blue  { color:var(--accent); }
-.kpi-value.red   { color:var(--danger); }
-.kpi-value.green { color:var(--success); }
-.kpi-value.warning{color:var(--warning); }
-.kpi-value.purple{ color:var(--purple); }
-
-.kpi-footer { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--text3); }
-.live-badge { background:var(--danger-light); color:var(--danger); font-size:10px; font-weight:700; padding:1px 7px; border-radius:20px; font-family:'DM Mono',monospace; animation:pulse 1.5s infinite; }
-
-/* MAIN GRID */
-.main-grid { display:grid; grid-template-columns:1fr 340px; gap:16px; }
-
-/* PANELS */
-.panel {
-  background:var(--surface); border:1px solid var(--border);
-  border-radius:14px; box-shadow:var(--shadow); overflow:hidden;
-  animation:fadeUp 0.4s ease both; animation-delay:0.25s;
+@keyframes fadeUp {
+  from{opacity:0;transform:translateY(10px)}
+  to{opacity:1;transform:translateY(0)}
 }
 
-.panel-header {
-  padding:16px 20px; border-bottom:1px solid var(--border);
-  display:flex; align-items:center; justify-content:space-between;
+.kpi-icon { font-size:22px; margin-bottom:6px; }
+.kpi-value {
+  font-size:28px;
+  font-weight:700;
+  letter-spacing:-1px;
+  line-height:1;
+  margin-bottom:4px;
 }
 
-.panel-title { font-size:14px; font-weight:700; letter-spacing:-0.2px; }
-.panel-sub { font-size:11px; color:var(--text3); font-family:'DM Mono',monospace; margin-top:1px; }
-.panel-actions { display:flex; gap:8px; }
+.kpi-value.red    { color:var(--danger); }
+.kpi-value.green  { color:var(--success); }
+.kpi-value.blue   { color:var(--accent); }
+.kpi-value.purple { color:var(--purple); }
 
-.btn-sm {
-  padding:6px 12px; border-radius:7px; font-size:12px;
-  font-weight:600; cursor:pointer; border:none; transition:all 0.15s;
+.kpi-label {
+  font-size:11px;
+  color:var(--text3);
+  font-weight:500;
+  text-transform:uppercase;
+  letter-spacing:0.5px;
+}
+
+.live-dot {
+  display:inline-block;
+  width:6px; height:6px;
+  background:var(--danger);
+  border-radius:50%;
+  margin-right:4px;
+  animation:pulse 1.5s infinite;
+}
+
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+/* ── TAB CONTENT ── */
+.tab-content { display:none; animation:fadeUp 0.3s ease; }
+.tab-content:first-of-type { display:block; }
+
+/* ── SECTION TITLE ── */
+.section-title {
+  font-size:13px;
+  font-weight:700;
+  color:var(--text2);
+  text-transform:uppercase;
+  letter-spacing:0.8px;
+  margin-bottom:10px;
+  font-family:'DM Mono',monospace;
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+
+.section-title::after {
+  content:'';
+  flex:1;
+  height:1px;
+  background:var(--border);
+}
+
+/* ── ALERT CARDS ── */
+.alert-feed { display:flex; flex-direction:column; gap:10px; margin-bottom:16px; }
+
+.alert-card {
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:12px;
+  padding:14px;
+  box-shadow:var(--shadow);
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:10px;
+  transition:transform 0.15s;
+}
+
+.alert-card:active { transform:scale(0.98); }
+
+.alert-card-active {
+  border-color:var(--danger);
+  background:var(--danger-light);
+  animation:cardPulse 1s infinite alternate;
+}
+
+@keyframes cardPulse {
+  from { box-shadow:0 0 0 rgba(239,68,68,0); }
+  to   { box-shadow:0 0 16px rgba(239,68,68,0.2); }
+}
+
+.alert-zona { font-size:14px; font-weight:600; margin-bottom:4px; }
+.alert-meta { font-size:11px; color:var(--text3); font-family:'DM Mono',monospace; margin-bottom:3px; }
+.alert-preceptor { font-size:12px; color:var(--text2); }
+
+.alert-card-right {
+  display:flex;
+  flex-direction:column;
+  align-items:flex-end;
+  gap:8px;
+  flex-shrink:0;
+}
+
+.btn-resolve {
+  background:var(--success);
+  color:#fff;
+  border:none;
+  border-radius:8px;
+  padding:6px 12px;
+  font-size:12px;
+  font-weight:700;
+  cursor:pointer;
+  font-family:'DM Sans',sans-serif;
+  white-space:nowrap;
+}
+
+/* ── BADGES ── */
+.badge {
+  display:inline-flex;
+  align-items:center;
+  padding:3px 9px;
+  border-radius:20px;
+  font-size:11px;
+  font-weight:600;
+  font-family:'DM Mono',monospace;
+}
+
+.badge.danger  { background:var(--danger-light);  color:#991b1b; }
+.badge.success { background:var(--success-light); color:#166534; }
+.badge.warning { background:var(--warning-light); color:#92400e; }
+.badge.info    { background:var(--accent-light);  color:#1e40af; }
+
+/* ── DEVICE CARDS ── */
+.device-list { display:flex; flex-direction:column; gap:10px; margin-bottom:16px; }
+
+.device-card {
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:12px;
+  padding:14px;
+  box-shadow:var(--shadow);
+  display:flex;
+  align-items:center;
+  gap:12px;
+}
+
+.dev-icon {
+  width:44px; height:44px;
+  border-radius:12px;
+  background:var(--surface2);
+  display:flex; align-items:center; justify-content:center;
+  font-size:22px;
+  flex-shrink:0;
+}
+
+.dev-name { font-size:13px; font-weight:600; margin-bottom:2px; }
+.dev-mac  { font-size:10px; color:var(--text3); font-family:'DM Mono',monospace; }
+
+.dev-right { margin-left:auto; display:flex; flex-direction:column; align-items:flex-end; gap:4px; }
+
+.dev-status-row { display:flex; align-items:center; gap:5px; font-size:12px; font-weight:600; }
+
+.dev-dot {
+  width:8px; height:8px;
+  border-radius:50%;
+}
+
+.dev-dot.online  { background:var(--success); animation:pulse 2s infinite; }
+.dev-dot.offline { background:var(--danger); }
+
+.dev-last { font-size:10px; color:var(--text3); font-family:'DM Mono',monospace; }
+
+/* ── SCHEDULE CARDS ── */
+.schedule-list { display:flex; flex-direction:column; gap:10px; margin-bottom:16px; }
+
+.schedule-card {
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:12px;
+  padding:14px;
+  box-shadow:var(--shadow);
+  display:flex;
+  align-items:center;
+  gap:12px;
+}
+
+.sched-avatar {
+  width:44px; height:44px;
+  border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  font-size:15px; font-weight:700; color:#fff;
+  flex-shrink:0;
+}
+
+.sched-name  { font-size:13px; font-weight:600; margin-bottom:2px; }
+.sched-time  { font-size:11px; color:var(--text3); font-family:'DM Mono',monospace; }
+
+.sched-days {
+  margin-left:auto;
+  display:flex;
+  gap:3px;
+}
+
+.day {
+  width:24px; height:24px;
+  border-radius:6px;
+  display:flex; align-items:center; justify-content:center;
+  font-size:9px; font-weight:700;
+  background:var(--surface2);
+  color:var(--text3);
+  border:1px solid var(--border);
+  font-family:'DM Mono',monospace;
+}
+
+.day.on    { background:var(--accent); color:#fff; border-color:var(--accent); }
+.day.today { background:var(--success); color:#fff; border-color:var(--success); }
+
+/* ── EMPTY STATE ── */
+.empty-state {
+  padding:40px 20px;
+  text-align:center;
+  color:var(--text3);
+  font-family:'DM Mono',monospace;
+  font-size:12px;
+}
+
+.empty-icon { font-size:36px; margin-bottom:10px; }
+
+/* ── BOTTOM NAV ── */
+.bottom-nav {
+  position:fixed;
+  bottom:0; left:0; right:0;
+  height:var(--nav-h);
+  background:var(--surface);
+  border-top:1px solid var(--border);
+  display:flex;
+  z-index:100;
+  box-shadow:0 -4px 20px rgba(0,0,0,0.08);
+}
+
+.nav-tab {
+  flex:1;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:4px;
+  cursor:pointer;
+  transition:all 0.15s;
+  color:var(--text3);
+  font-size:11px;
+  font-weight:500;
+  position:relative;
+  border:none;
+  background:transparent;
   font-family:'DM Sans',sans-serif;
 }
 
-.btn-primary { background:var(--accent); color:#fff; }
-.btn-primary:hover { background:#1e40af; }
-.btn-ghost { background:var(--surface2); color:var(--text2); border:1px solid var(--border); }
-.btn-ghost:hover { background:var(--border); }
-.btn-success { background:var(--success); color:#fff; }
-.btn-success:hover { background:#16a34a; }
-.btn-danger { background:var(--danger); color:#fff; }
+.nav-tab.active { color:var(--accent); }
 
-/* TABLE */
-.table-wrap { overflow-x:auto; }
-table { width:100%; border-collapse:collapse; }
-thead th {
-  padding:10px 20px; text-align:left; font-size:10px;
-  font-weight:700; color:var(--text3); text-transform:uppercase;
-  letter-spacing:0.8px; background:var(--surface2);
-  border-bottom:1px solid var(--border); font-family:'DM Mono',monospace;
-}
-tbody tr { border-bottom:1px solid var(--border); transition:background 0.1s; cursor:pointer; }
-tbody tr:last-child { border-bottom:none; }
-tbody tr:hover { background:var(--surface2); }
-tbody td { padding:12px 20px; font-size:13px; vertical-align:middle; }
+.nav-tab-icon { font-size:22px; }
 
-/* BADGES */
-.badge {
-  display:inline-flex; align-items:center; gap:5px;
-  padding:3px 9px; border-radius:20px; font-size:11px;
-  font-weight:600; font-family:'DM Mono',monospace;
-}
-.badge-dot { width:6px; height:6px; border-radius:50%; }
-.badge.danger  { background:var(--danger-light); color:#991b1b; }
-.badge.danger .badge-dot  { background:var(--danger); }
-.badge.success { background:var(--success-light); color:#166534; }
-.badge.success .badge-dot { background:var(--success); }
-.badge.warning { background:var(--warning-light); color:#92400e; }
-.badge.warning .badge-dot { background:var(--warning); }
-.badge.info    { background:var(--accent-light); color:#1e40af; }
-.badge.info .badge-dot    { background:var(--accent); }
+.nav-badge-wrap { position:relative; }
 
-/* DEVICES */
-.devices-list { display:flex; flex-direction:column; }
-.device-row {
-  padding:14px 20px; border-bottom:1px solid var(--border);
-  display:flex; align-items:center; gap:14px; transition:background 0.1s;
-}
-.device-row:last-child { border-bottom:none; }
-.device-row:hover { background:var(--surface2); }
-
-.device-icon-wrap {
-  width:44px; height:44px; border-radius:12px;
-  display:flex; align-items:center; justify-content:center;
-  font-size:20px; flex-shrink:0;
+.nav-badge {
+  position:absolute;
+  top:-4px; right:-8px;
+  background:var(--danger);
+  color:#fff;
+  font-size:9px;
+  font-weight:700;
+  width:16px; height:16px;
+  border-radius:50%;
+  display:none;
+  align-items:center;
+  justify-content:center;
+  font-family:'DM Mono',monospace;
 }
 
-.device-icon-wrap.online  { background:var(--success-light); }
-.device-icon-wrap.offline { background:var(--danger-light); }
+/* ── INSTALL BANNER ── */
+.install-banner {
+  background:var(--accent);
+  color:#fff;
+  padding:12px 16px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+}
 
-.device-name { font-size:13px; font-weight:600; margin-bottom:2px; }
-.device-mac  { font-size:10px; color:var(--text3); font-family:'DM Mono',monospace; }
+.install-text { font-size:13px; font-weight:600; }
+.install-sub  { font-size:11px; opacity:0.8; }
 
-.device-meta { display:flex; flex-direction:column; align-items:flex-end; gap:4px; }
+.btn-install {
+  background:#fff;
+  color:var(--accent);
+  border:none;
+  border-radius:8px;
+  padding:8px 14px;
+  font-size:12px;
+  font-weight:700;
+  cursor:pointer;
+  font-family:'DM Sans',sans-serif;
+  white-space:nowrap;
+}
 
-.signal-bars { display:flex; align-items:flex-end; gap:2px; height:14px; }
-.bar { width:4px; border-radius:1px; background:var(--border2); }
-.bar.active { background:var(--success); }
-.bar:nth-child(1){height:4px}
-.bar:nth-child(2){height:7px}
-.bar:nth-child(3){height:10px}
-.bar:nth-child(4){height:14px}
+/* ── DESKTOP ── */
+@media (min-width:768px) {
+  body { padding-bottom:0; }
+  .bottom-nav { display:none; }
 
-.last-seen { font-size:10px; color:var(--text3); font-family:'DM Mono',monospace; }
+  .desktop-nav {
+    display:flex !important;
+    background:var(--surface);
+    border-bottom:1px solid var(--border);
+    padding:0 24px;
+    gap:4px;
+  }
 
-/* SCHEDULE */
-.schedule-list { display:flex; flex-direction:column; }
-.schedule-row { padding:12px 20px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:12px; }
-.schedule-row:last-child { border-bottom:none; }
+  .desktop-tab {
+    padding:12px 16px;
+    font-size:13px;
+    font-weight:600;
+    cursor:pointer;
+    color:var(--text3);
+    border-bottom:2px solid transparent;
+    transition:all 0.15s;
+    border:none;
+    background:transparent;
+    font-family:'DM Sans',sans-serif;
+    display:flex;
+    align-items:center;
+    gap:6px;
+  }
 
-.schedule-avatar { width:36px; height:36px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:700; flex-shrink:0; color:#fff; }
-.schedule-name { font-size:13px; font-weight:600; }
-.schedule-time { font-size:10px; color:var(--text3); font-family:'DM Mono',monospace; margin-top:2px; }
+  .desktop-tab.active {
+    color:var(--accent);
+    border-bottom:2px solid var(--accent);
+  }
 
-.schedule-days { display:flex; gap:3px; margin-left:auto; }
-.day-chip { width:22px; height:22px; border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:9px; font-weight:700; background:var(--surface2); color:var(--text3); border:1px solid var(--border); font-family:'DM Mono',monospace; }
-.day-chip.active { background:var(--accent); color:#fff; border-color:var(--accent); }
-.day-chip.today  { background:var(--success); color:#fff; border-color:var(--success); }
+  .content { padding:24px; }
+  .kpi-grid { grid-template-columns:repeat(4,1fr); }
+}
 
-/* BOTTOM */
-.bottom-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-
-.stat-row { display:flex; align-items:center; justify-content:space-between; padding:12px 20px; border-bottom:1px solid var(--border); }
-.stat-row:last-child { border-bottom:none; }
-.stat-label { font-size:12px; color:var(--text2); font-weight:500; }
-.stat-value { font-size:13px; font-weight:700; font-family:'DM Mono',monospace; }
-.stat-bar-wrap { width:80px; height:4px; background:var(--border); border-radius:2px; overflow:hidden; }
-.stat-bar { height:100%; border-radius:2px; background:var(--accent); }
-
-/* EMPTY STATE */
-.empty-state { padding:40px 20px; text-align:center; color:var(--text3); font-family:'DM Mono',monospace; font-size:12px; }
-.empty-icon { font-size:32px; margin-bottom:8px; }
-
-::-webkit-scrollbar { width:5px; height:5px; }
-::-webkit-scrollbar-track { background:transparent; }
-::-webkit-scrollbar-thumb { background:var(--border2); border-radius:3px; }
+.desktop-nav { display:none; }
 </style>
 </head>
 <body>
 
-<!-- SIDEBAR -->
-<aside class="sidebar">
-  <div class="sidebar-logo">
-    <div class="logo-badge">
-      <div class="logo-icon">🛡️</div>
-      <div>
-        <div class="logo-text">EduSegura</div>
-        <div class="logo-sub">LUMINA · EPET15</div>
-      </div>
-    </div>
-  </div>
-
-  <nav class="sidebar-nav">
-    <div class="nav-section">Principal</div>
-    <div class="nav-item active"><span class="nav-icon">📊</span> Dashboard</div>
-    <div class="nav-item"><span class="nav-icon">🚨</span> Alertas <span class="nav-badge" id="nav-count">0</span></div>
-    <div class="nav-item"><span class="nav-icon">📡</span> Dispositivos</div>
-
-    <div class="nav-section">Gestión</div>
-    <div class="nav-item"><span class="nav-icon">👤</span> Preceptores</div>
-    <div class="nav-item"><span class="nav-icon">🕐</span> Horarios</div>
-    <div class="nav-item"><span class="nav-icon">📋</span> Historial</div>
-
-    <div class="nav-section">Sistema</div>
-    <div class="nav-item"><span class="nav-icon">📱</span> Telegram Bot</div>
-    <div class="nav-item"><span class="nav-icon">⚙️</span> Configuración</div>
-  </nav>
-
-  <div class="firebase-badge">
-    <div class="fb-dot"></div>
-    Firebase · Tiempo real
-  </div>
-
-  <div class="sidebar-footer">
-    <div class="user-card">
-      <div class="user-avatar">MS</div>
-      <div>
-        <div class="user-name">Marcelo SanMa</div>
-        <div class="user-role">Administrador</div>
-      </div>
-    </div>
-  </div>
-</aside>
-
-<!-- MAIN -->
-<main class="main">
-
-  <!-- TOPBAR -->
-  <div class="topbar">
+<!-- TOPBAR -->
+<div class="topbar">
+  <div class="topbar-logo">
+    <div class="logo-icon">🛡️</div>
     <div>
-      <div class="page-title">Panel de Control</div>
-      <div class="page-sub" id="hora-live">Cargando...</div>
-    </div>
-    <div class="topbar-right">
-      <div class="system-status">
-        <div class="status-pulse"></div>
-        Firebase conectado
-      </div>
-      <button class="btn-sm btn-danger" onclick="simularAlerta()" style="font-size:11px;">
-        🧪 Simular alerta
-      </button>
-      <div class="top-btn">⚙️</div>
+      <div class="logo-text">EduSegura LUMINA</div>
+      <div class="logo-sub">EPET N°15</div>
     </div>
   </div>
-
-  <!-- BANNER ALERTA ACTIVA -->
-  <div class="alert-banner" id="alert-banner">
-    <div class="banner-left">
-      <div class="banner-icon">🚨</div>
-      <div>
-        <div class="banner-title">¡EMERGENCIA ACTIVA! — <span id="banner-zona"></span></div>
-        <div class="banner-sub">Hora: <span id="banner-hora"></span> · Acudir con CALMA</div>
-      </div>
-    </div>
-    <div class="banner-right">
-      <button class="btn-banner btn-white" onclick="resolverDesde()" id="banner-id">✅ Marcar resuelta</button>
-    </div>
+  <div class="topbar-right">
+    <div class="hora-chip" id="hora-live">--:--</div>
+    <button class="btn-sim" onclick="simularAlerta()">🧪 Test</button>
   </div>
+</div>
 
-  <!-- CONTENT -->
-  <div class="content">
+<!-- DESKTOP NAV -->
+<div class="desktop-nav" id="desktop-nav">
+  <button class="desktop-tab active" id="dnav-inicio" onclick="showTab('inicio'); setDesktopTab('inicio')">📊 Dashboard</button>
+  <button class="desktop-tab" id="dnav-alertas" onclick="showTab('alertas'); setDesktopTab('alertas')">🚨 Alertas</button>
+  <button class="desktop-tab" id="dnav-dispositivos" onclick="showTab('dispositivos'); setDesktopTab('dispositivos')">📡 Dispositivos</button>
+  <button class="desktop-tab" id="dnav-horarios" onclick="showTab('horarios'); setDesktopTab('horarios')">🕐 Horarios</button>
+</div>
+
+<!-- ALERT BANNER -->
+<div class="alert-banner" id="alert-banner">
+  <div class="banner-title">
+    <span class="banner-shake">🚨</span>
+    EMERGENCIA — <span id="banner-zona"></span>
+  </div>
+  <div class="banner-sub">Hora: <span id="banner-hora"></span> · Acudir con CALMA</div>
+  <button class="btn-banner-resolve" onclick="resolverDesde()" id="banner-id">✅ Marcar como resuelta</button>
+</div>
+
+<!-- CONTENT -->
+<div class="content">
+
+  <!-- TAB INICIO -->
+  <div class="tab-content" id="tab-inicio">
 
     <!-- KPIs -->
     <div class="kpi-grid">
       <div class="kpi-card">
-        <div class="kpi-top">
-          <div class="kpi-label">Alertas hoy</div>
-          <div class="kpi-icon red">🚨</div>
-        </div>
-        <div class="kpi-value red" id="kpi-alertas-hoy">—</div>
-        <div class="kpi-footer"><span class="live-badge">● LIVE</span> actualizando</div>
+        <div class="kpi-icon">🚨</div>
+        <div class="kpi-value red" id="kpi-hoy">—</div>
+        <div class="kpi-label"><span class="live-dot"></span>Alertas hoy</div>
       </div>
-
       <div class="kpi-card">
-        <div class="kpi-top">
-          <div class="kpi-label">Dispositivos online</div>
-          <div class="kpi-icon green">📡</div>
-        </div>
-        <div class="kpi-value green" id="kpi-dispositivos" id2="kpi-disp-color">—</div>
-        <div class="kpi-footer"><span class="live-badge">● LIVE</span> ESP-NOW</div>
+        <div class="kpi-icon">📡</div>
+        <div class="kpi-value green" id="kpi-disp">—</div>
+        <div class="kpi-label"><span class="live-dot"></span>Dispositivos</div>
       </div>
-
       <div class="kpi-card">
-        <div class="kpi-top">
-          <div class="kpi-label">Última alerta</div>
-          <div class="kpi-icon blue">🕐</div>
-        </div>
-        <div class="kpi-value blue" style="font-size:16px;padding-top:8px;" id="ultima-zona">—</div>
-        <div class="kpi-footer" id="ultima-alerta" style="font-family:'DM Mono',monospace;">Sin alertas</div>
+        <div class="kpi-icon">⚠️</div>
+        <div class="kpi-value red" id="kpi-act">—</div>
+        <div class="kpi-label"><span class="live-dot"></span>Activas ahora</div>
       </div>
-
       <div class="kpi-card">
-        <div class="kpi-top">
-          <div class="kpi-label">Alertas este mes</div>
-          <div class="kpi-icon purple">📈</div>
-        </div>
-        <div class="kpi-value purple" id="kpi-alertas-mes">—</div>
-        <div class="kpi-footer"><span class="live-badge">● LIVE</span> acumulado</div>
+        <div class="kpi-icon">📈</div>
+        <div class="kpi-value purple" id="kpi-mes">—</div>
+        <div class="kpi-label"><span class="live-dot"></span>Este mes</div>
       </div>
     </div>
 
-    <!-- MAIN GRID -->
-    <div class="main-grid">
-
-      <!-- Historial -->
-      <div class="panel">
-        <div class="panel-header">
-          <div>
-            <div class="panel-title">Historial de Alertas</div>
-            <div class="panel-sub">Datos en tiempo real desde Firebase</div>
-          </div>
-          <div class="panel-actions">
-            <button class="btn-sm btn-ghost">Exportar</button>
-          </div>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Hora</th>
-                <th>Zona</th>
-                <th>Dispositivo</th>
-                <th>Preceptor</th>
-                <th>Estado</th>
-                <th>Acción</th>
-              </tr>
-            </thead>
-            <tbody id="tabla-alertas">
-              <tr>
-                <td colspan="6">
-                  <div class="empty-state">
-                    <div class="empty-icon">📡</div>
-                    Conectando a Firebase...
-                  </div>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- Panel derecho -->
-      <div style="display:flex;flex-direction:column;gap:16px;">
-
-        <!-- Dispositivos -->
-        <div class="panel">
-          <div class="panel-header">
-            <div>
-              <div class="panel-title">Dispositivos</div>
-              <div class="panel-sub">Estado en tiempo real</div>
-            </div>
-          </div>
-          <div class="devices-list">
-
-            <div class="device-row" id="dev-master">
-              <div class="device-icon-wrap online">🖥️</div>
-              <div style="flex:1;">
-                <div class="device-name">Master — Sala Profes.</div>
-                <div class="device-mac">ESP8266MOD · D8:BF:C0:F6:9E:F7</div>
-              </div>
-              <div class="device-meta">
-                <span class="badge success dev-status"><span class="badge-dot"></span>Online</span>
-                <div class="signal-bars">
-                  <div class="bar active"></div><div class="bar active"></div>
-                  <div class="bar active"></div><div class="bar active"></div>
-                </div>
-                <div class="last-seen dev-last">—</div>
-              </div>
-            </div>
-
-            <div class="device-row" id="dev-bano">
-              <div class="device-icon-wrap online">🚻</div>
-              <div style="flex:1;">
-                <div class="device-name">Baño de Talleres</div>
-                <div class="device-mac">ZY8266MOD · 48:3F:DA:07:45:2F</div>
-              </div>
-              <div class="device-meta">
-                <span class="badge warning dev-status"><span class="badge-dot"></span>Sin datos</span>
-                <div class="signal-bars">
-                  <div class="bar active"></div><div class="bar active"></div>
-                  <div class="bar active"></div><div class="bar"></div>
-                </div>
-                <div class="last-seen dev-last">—</div>
-              </div>
-            </div>
-
-            <div class="device-row" id="dev-porton">
-              <div class="device-icon-wrap online">🚪</div>
-              <div style="flex:1;">
-                <div class="device-name">Portón / Entrada</div>
-                <div class="device-mac">ESP32-WROOM · F0:08:D1:F1:AA:2C</div>
-              </div>
-              <div class="device-meta">
-                <span class="badge warning dev-status"><span class="badge-dot"></span>Sin datos</span>
-                <div class="signal-bars">
-                  <div class="bar active"></div><div class="bar active"></div>
-                  <div class="bar active"></div><div class="bar active"></div>
-                </div>
-                <div class="last-seen dev-last">—</div>
-              </div>
-            </div>
-
-          </div>
-        </div>
-
-        <!-- Horarios -->
-        <div class="panel">
-          <div class="panel-header">
-            <div>
-              <div class="panel-title">Horarios de Guardia</div>
-              <div class="panel-sub">Semana actual</div>
-            </div>
-          </div>
-          <div class="schedule-list">
-
-            <div class="schedule-row">
-              <div class="schedule-avatar" style="background:linear-gradient(135deg,#1d4ed8,#0ea5e9)">JP</div>
-              <div style="flex:1;">
-                <div class="schedule-name">Juan Pérez <span class="badge success" style="font-size:9px;padding:1px 6px;margin-left:4px;"><span class="badge-dot"></span>De turno</span></div>
-                <div class="schedule-time">13:00 — 19:00</div>
-              </div>
-              <div class="schedule-days">
-                <div class="day-chip">L</div><div class="day-chip active">M</div>
-                <div class="day-chip today">X</div><div class="day-chip active">J</div>
-                <div class="day-chip active">V</div>
-              </div>
-            </div>
-
-            <div class="schedule-row">
-              <div class="schedule-avatar" style="background:linear-gradient(135deg,#8b5cf6,#ec4899)">ML</div>
-              <div style="flex:1;">
-                <div class="schedule-name">María López</div>
-                <div class="schedule-time">07:00 — 13:00</div>
-              </div>
-              <div class="schedule-days">
-                <div class="day-chip active">L</div><div class="day-chip active">M</div>
-                <div class="day-chip active">X</div><div class="day-chip active">J</div>
-                <div class="day-chip active">V</div>
-              </div>
-            </div>
-
-            <div class="schedule-row">
-              <div class="schedule-avatar" style="background:linear-gradient(135deg,#f59e0b,#ef4444)">CG</div>
-              <div style="flex:1;">
-                <div class="schedule-name">Carlos Gil</div>
-                <div class="schedule-time">08:00 — 12:00</div>
-              </div>
-              <div class="schedule-days">
-                <div class="day-chip">L</div><div class="day-chip">M</div>
-                <div class="day-chip">X</div><div class="day-chip">J</div>
-                <div class="day-chip">V</div><div class="day-chip active">S</div>
-              </div>
-            </div>
-
-          </div>
-        </div>
-
+    <!-- Alertas recientes -->
+    <div class="section-title">Alertas recientes</div>
+    <div class="alert-feed" id="alert-feed">
+      <div class="empty-state">
+        <div class="empty-icon">📡</div>
+        Conectando a Firebase...
       </div>
     </div>
 
   </div>
-</main>
 
+  <!-- TAB ALERTAS -->
+  <div class="tab-content" id="tab-alertas">
+    <div class="section-title">Historial completo</div>
+    <div class="alert-feed" id="alert-feed-2">
+      <div class="empty-state"><div class="empty-icon">📋</div>Cargando...</div>
+    </div>
+  </div>
+
+  <!-- TAB DISPOSITIVOS -->
+  <div class="tab-content" id="tab-dispositivos">
+    <div class="section-title">Estado en tiempo real</div>
+    <div class="device-list">
+
+      <div class="device-card" id="dev-master">
+        <div class="dev-icon">🖥️</div>
+        <div>
+          <div class="dev-name">Master — Sala Profesores</div>
+          <div class="dev-mac">ESP8266MOD · D8:BF:C0:F6:9E:F7</div>
+        </div>
+        <div class="dev-right">
+          <div class="dev-status-row">
+            <div class="dev-dot online"></div>
+            <span class="dev-estado">Online</span>
+          </div>
+          <div class="dev-last">—</div>
+        </div>
+      </div>
+
+      <div class="device-card" id="dev-bano">
+        <div class="dev-icon">🚻</div>
+        <div>
+          <div class="dev-name">Baño de Talleres</div>
+          <div class="dev-mac">ZY8266MOD · 48:3F:DA:07:45:2F</div>
+        </div>
+        <div class="dev-right">
+          <div class="dev-status-row">
+            <div class="dev-dot offline"></div>
+            <span class="dev-estado">Sin datos</span>
+          </div>
+          <div class="dev-last">—</div>
+        </div>
+      </div>
+
+      <div class="device-card" id="dev-porton">
+        <div class="dev-icon">🚪</div>
+        <div>
+          <div class="dev-name">Portón / Entrada</div>
+          <div class="dev-mac">ESP32-WROOM · F0:08:D1:F1:AA:2C</div>
+        </div>
+        <div class="dev-right">
+          <div class="dev-status-row">
+            <div class="dev-dot offline"></div>
+            <span class="dev-estado">Sin datos</span>
+          </div>
+          <div class="dev-last">—</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- TAB HORARIOS -->
+  <div class="tab-content" id="tab-horarios">
+    <div class="section-title">Guardias semanales</div>
+    <div class="schedule-list">
+
+      <div class="schedule-card">
+        <div class="sched-avatar" style="background:linear-gradient(135deg,#1d4ed8,#0ea5e9)">JP</div>
+        <div>
+          <div class="sched-name">Juan Pérez <span class="badge success" style="font-size:9px;margin-left:4px;">De turno</span></div>
+          <div class="sched-time">13:00 — 19:00</div>
+        </div>
+        <div class="sched-days">
+          <div class="day">L</div><div class="day on">M</div>
+          <div class="day today">X</div><div class="day on">J</div>
+          <div class="day on">V</div>
+        </div>
+      </div>
+
+      <div class="schedule-card">
+        <div class="sched-avatar" style="background:linear-gradient(135deg,#8b5cf6,#ec4899)">ML</div>
+        <div>
+          <div class="sched-name">María López</div>
+          <div class="sched-time">07:00 — 13:00</div>
+        </div>
+        <div class="sched-days">
+          <div class="day on">L</div><div class="day on">M</div>
+          <div class="day on">X</div><div class="day on">J</div>
+          <div class="day on">V</div>
+        </div>
+      </div>
+
+      <div class="schedule-card">
+        <div class="sched-avatar" style="background:linear-gradient(135deg,#f59e0b,#ef4444)">CG</div>
+        <div>
+          <div class="sched-name">Carlos Gil</div>
+          <div class="sched-time">08:00 — 12:00</div>
+        </div>
+        <div class="sched-days">
+          <div class="day">L</div><div class="day">M</div>
+          <div class="day">X</div><div class="day">J</div>
+          <div class="day">V</div><div class="day on">S</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<!-- BOTTOM NAV MÓVIL -->
+<nav class="bottom-nav">
+  <button class="nav-tab active" id="nav-inicio" onclick="showTab('inicio')">
+    <div class="nav-badge-wrap">
+      <span class="nav-tab-icon">📊</span>
+    </div>
+    Inicio
+  </button>
+  <button class="nav-tab" id="nav-alertas" onclick="showTab('alertas')">
+    <div class="nav-badge-wrap">
+      <span class="nav-tab-icon">🚨</span>
+      <span class="nav-badge" id="nav-badge">0</span>
+    </div>
+    Alertas
+  </button>
+  <button class="nav-tab" id="nav-dispositivos" onclick="showTab('dispositivos')">
+    <span class="nav-tab-icon">📡</span>
+    Devices
+  </button>
+  <button class="nav-tab" id="nav-horarios" onclick="showTab('horarios')">
+    <span class="nav-tab-icon">🕐</span>
+    Horarios
+  </button>
+</nav>
+
+<script>
+  // Navegación tabs
+  function showTab(tab) {
+    document.querySelectorAll(".tab-content").forEach(t => t.style.display = "none");
+    document.querySelectorAll(".nav-tab").forEach(t => t.classList.remove("active"));
+    document.getElementById(`tab-${tab}`).style.display = "block";
+    const navEl = document.getElementById(`nav-${tab}`);
+    if (navEl) navEl.classList.add("active");
+  }
+
+  function setDesktopTab(tab) {
+    document.querySelectorAll(".desktop-tab").forEach(t => t.classList.remove("active"));
+    document.getElementById(`dnav-${tab}`).classList.add("active");
+  }
+
+  // Inicializar tab
+  showTab("inicio");
+
+  // PWA Install
+  let deferredPrompt;
+  window.addEventListener("beforeinstallprompt", e => {
+    e.preventDefault();
+    deferredPrompt = e;
+  });
+</script>
 </body>
 </html>
