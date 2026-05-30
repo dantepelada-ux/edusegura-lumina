@@ -4,187 +4,710 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="EduSegura">
-<meta name="theme-color" content="#1d4ed8">
-<title>EduSegura LUMINA</title>
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#2563eb">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0a0e1a">
+<title>EduSegura LUMINA — EPET N°15</title>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 
 <!-- Firebase -->
 <script type="module">
-  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-  import { getDatabase, ref, onValue, push, set }
-    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getDatabase, ref, onValue, push, set, remove, get }
+  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 
-  const firebaseConfig = {
-    apiKey: "AIzaSyA7zf9COb_19_CwhnhAZJi0X7tSR_dhPDg",
-    authDomain: "edusegura-lumina.firebaseapp.com",
-    databaseURL: "https://edusegura-lumina-default-rtdb.firebaseio.com",
-    projectId: "edusegura-lumina",
-    storageBucket: "edusegura-lumina.firebasestorage.app",
-    messagingSenderId: "571941703188",
-    appId: "1:571941703188:web:e9b6aa3243d9eb4d932101"
+const firebaseConfig = {
+  apiKey: "AIzaSyA7zf9COb_19_CwhnhAZJi0X7tSR_dhPDg",
+  authDomain: "edusegura-lumina.firebaseapp.com",
+  databaseURL: "https://edusegura-lumina-default-rtdb.firebaseio.com",
+  projectId: "edusegura-lumina",
+  storageBucket: "edusegura-lumina.firebasestorage.app",
+  messagingSenderId: "571941703188",
+  appId: "1:571941703188:web:e9b6aa3243d9eb4d932101"
+};
+
+const app = initializeApp(firebaseConfig);
+const db  = getDatabase(app);
+
+// ── Palabra clave de invitación (el admin la define) ──
+const CODIGO_INVITACION = "EPET2026";
+
+// ── Usuarios locales base ──
+const USUARIOS_BASE = {
+  "admin@epet15.edu.ar": { pass:"Admin2024!", rol:"admin", nombre:"Marcelo SanMa" },
+};
+
+// ── Turnos predefinidos ──
+const TURNOS = [
+  { id:"manana",       label:"Mañana Aulas",       hora:"07:00-13:00", sector:"Aulas" },
+  { id:"tarde",        label:"Tarde Aulas",         hora:"13:00-18:00", sector:"Aulas" },
+  { id:"vespertino",   label:"Vespertino Aulas",    hora:"18:00-22:00", sector:"Aulas" },
+  { id:"taller_m",     label:"Taller Mañana",       hora:"07:00-13:00", sector:"Talleres" },
+  { id:"taller_t",     label:"Taller Tarde",        hora:"13:00-17:00", sector:"Talleres" },
+  { id:"taller_mt",    label:"Taller Media tarde",  hora:"15:00-19:00", sector:"Talleres" },
+];
+
+const DIAS = ["L","M","X","J","V","S","D"];
+const DIAS_FULL = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"];
+
+let usuarioActual = null;
+let alertasData   = {};
+let preceptoresData = {};
+let intervaloReenvio = {};
+
+// ── Helpers ──
+const $ = id => document.getElementById(id);
+
+function fmtHora(ts) {
+  if (!ts) return "—";
+  return new Date(ts).toLocaleTimeString("es-AR", { hour:"2-digit", minute:"2-digit" });
+}
+
+function fmtCompleto(ts) {
+  if (!ts) return "—";
+  return new Date(ts).toLocaleString("es-AR", { day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit" });
+}
+
+function zonaNombre(z) {
+  const map = { BANO_TALLERES:"🚻 Baño Talleres", PORTON:"🚪 Portón/Entrada" };
+  return map[z] || z || "—";
+}
+
+function nivelInfo(n) {
+  const map = {
+    1: { label:"Nivel 1", color:"warning", emoji:"🟡", desc:"Atención" },
+    2: { label:"Nivel 2", color:"orange",  emoji:"🟠", desc:"Urgente" },
+    3: { label:"Nivel 3", color:"danger",  emoji:"🔴", desc:"Emergencia" },
   };
+  return map[n] || map[1];
+}
 
-  const app = initializeApp(firebaseConfig);
-  const db  = getDatabase(app);
+function estadoBadge(e) {
+  const map = {
+    activa:        `<span class="badge danger">🔴 Activa</span>`,
+    resuelta:      `<span class="badge success">✅ Resuelta</span>`,
+    sin_confirmar: `<span class="badge warning">⚠️ Sin confirmar</span>`,
+    archivada:     `<span class="badge muted">📁 Archivada</span>`,
+  };
+  return map[e] || `<span class="badge info">${e}</span>`;
+}
 
-  function fmt(ts) {
-    if (!ts) return "—";
-    return new Date(ts).toLocaleTimeString("es-AR", { hour:"2-digit", minute:"2-digit" });
+function tiempoTranscurrido(ts) {
+  if (!ts) return "—";
+  const diff = Math.floor((Date.now() - ts) / 60000);
+  if (diff < 1)  return "Ahora";
+  if (diff < 60) return `${diff}min`;
+  return `${Math.floor(diff/60)}h ${diff%60}min`;
+}
+
+function getIniciales(nombre) {
+  return nombre.split(' ').map(n => n[0]).join('').substring(0,2).toUpperCase();
+}
+
+function getHoraActual() {
+  const now = new Date();
+  return now.getHours() * 60 + now.getMinutes();
+}
+
+function getDiaActual() {
+  return new Date().getDay(); // 0=Dom, 1=Lun...6=Sab
+}
+
+function parsearHora(horaStr) {
+  const [h, m] = horaStr.split(':').map(Number);
+  return h * 60 + m;
+}
+
+function estaDeTurno(preceptor) {
+  if (!preceptor.turno || !preceptor.dias) return false;
+  if (preceptor.override && preceptor.overrideHasta > Date.now()) return true;
+
+  const ahora = getHoraActual();
+  const diaNow = getDiaActual();
+  const diasMap = { L:1, M:2, X:3, J:4, V:5, S:6, D:0 };
+
+  const diasActivos = preceptor.dias || [];
+  const diaOk = diasActivos.some(d => diasMap[d] === diaNow);
+  if (!diaOk) return false;
+
+  const turno = TURNOS.find(t => t.id === preceptor.turno);
+  if (!turno) return false;
+
+  const [inicio, fin] = turno.hora.split('-');
+  return ahora >= parsearHora(inicio) && ahora < parsearHora(fin);
+}
+
+function getColorAvatar(nombre) {
+  const colores = ["#1d4ed8","#7c3aed","#0f766e","#b45309","#be185d","#15803d","#c2410c","#1e40af"];
+  let hash = 0;
+  for (let c of nombre) hash = c.charCodeAt(0) + ((hash << 5) - hash);
+  return colores[Math.abs(hash) % colores.length];
+}
+
+// ── LOGIN ──
+window.login = () => {
+  const email = $("login-email").value.trim();
+  const pass  = $("login-pass").value;
+  const err   = $("login-error");
+  err.textContent = "";
+
+  // Verificar admin local
+  const userBase = USUARIOS_BASE[email];
+  if (userBase && userBase.pass === pass) {
+    usuarioActual = { email, ...userBase };
+    localStorage.setItem("edusegura_user", JSON.stringify(usuarioActual));
+    mostrarApp();
+    return;
   }
 
-  function fmtFull(ts) {
-    if (!ts) return "—";
-    return new Date(ts).toLocaleString("es-AR", { day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit" });
-  }
-
-  function zonaNombre(z) {
-    if (z === "BANO_TALLERES") return "🚻 Baño Talleres";
-    if (z === "PORTON")        return "🚪 Portón Entrada";
-    return z || "—";
-  }
-
-  function estadoBadge(e) {
-    const map = {
-      activa:        `<span class="badge danger">Activa</span>`,
-      resuelta:      `<span class="badge success">Resuelta</span>`,
-      sin_confirmar: `<span class="badge warning">Sin confirmar</span>`,
-    };
-    return map[e] || `<span class="badge info">${e}</span>`;
-  }
-
-  // Alertas
-  onValue(ref(db, "alertas"), snap => {
-    const data = snap.val() || {};
-    const lista = Object.entries(data)
-      .map(([k,v]) => ({ id:k, ...v }))
-      .sort((a,b) => (b.timestamp||0) - (a.timestamp||0));
-
-    const hoy = new Date(); hoy.setHours(0,0,0,0);
-    const mes = new Date(); mes.setDate(1); mes.setHours(0,0,0,0);
-
-    const hoyC = lista.filter(a => a.timestamp >= hoy.getTime()).length;
-    const mesC = lista.filter(a => a.timestamp >= mes.getTime()).length;
-    const actC = lista.filter(a => a.estado === "activa").length;
-
-    document.getElementById("kpi-hoy").textContent  = hoyC;
-    document.getElementById("kpi-mes").textContent  = mesC;
-    document.getElementById("kpi-act").textContent  = actC;
-    document.getElementById("nav-badge").textContent = actC > 0 ? actC : "";
-    document.getElementById("nav-badge").style.display = actC > 0 ? "flex" : "none";
-
-    // Banner
-    const activa = lista.find(a => a.estado === "activa");
-    const banner = document.getElementById("alert-banner");
-    if (activa) {
-      banner.style.display = "flex";
-      document.getElementById("banner-zona").textContent = zonaNombre(activa.zona);
-      document.getElementById("banner-hora").textContent = fmt(activa.timestamp);
-      document.getElementById("banner-id").dataset.id = activa.id;
-      // Vibrar celular
-      if (navigator.vibrate) navigator.vibrate([300,100,300,100,300]);
+  // Verificar preceptores en Firebase
+  get(ref(db, "preceptores")).then(snap => {
+    const precs = snap.val() || {};
+    const found = Object.entries(precs).find(([k,v]) => v.email === email && v.pass === pass);
+    if (found) {
+      usuarioActual = { email, rol:"preceptor", nombre:found[1].nombre, id:found[0] };
+      localStorage.setItem("edusegura_user", JSON.stringify(usuarioActual));
+      mostrarApp();
     } else {
-      banner.style.display = "none";
+      err.textContent = "❌ Email o contraseña incorrectos";
     }
+  });
+};
 
-    // Cards de alertas recientes
-    const feed = document.getElementById("alert-feed");
-    if (lista.length === 0) {
-      feed.innerHTML = `<div class="empty-state"><div class="empty-icon">📡</div><div>Sin alertas registradas</div></div>`;
-      return;
-    }
+window.logout = () => {
+  usuarioActual = null;
+  localStorage.removeItem("edusegura_user");
+  mostrarLogin();
+};
 
-    feed.innerHTML = lista.slice(0,15).map(a => `
-      <div class="alert-card ${a.estado === 'activa' ? 'alert-card-active' : ''}">
-        <div class="alert-card-left">
-          <div class="alert-zona">${zonaNombre(a.zona)}</div>
-          <div class="alert-meta">${fmtFull(a.timestamp)} · ${a.dispositivo || "—"}</div>
-          <div class="alert-preceptor">👤 ${a.preceptor || "—"}</div>
-        </div>
-        <div class="alert-card-right">
-          ${estadoBadge(a.estado)}
-          ${a.estado === 'activa'
-            ? `<button class="btn-resolve" onclick="resolverAlerta('${a.id}')">✅ Resolver</button>`
-            : ''
-          }
-        </div>
-      </div>
-    `).join("");
+window.registrarPreceptor = async () => {
+  const codigo   = $("reg-codigo").value.trim();
+  const nombre   = $("reg-nombre").value.trim();
+  const email    = $("reg-email").value.trim();
+  const pass     = $("reg-pass").value;
+  const tel      = $("reg-tel").value.trim();
+  const chatId   = $("reg-chatid").value.trim();
+  const err      = $("reg-error");
+
+  err.textContent = "";
+
+  if (codigo !== CODIGO_INVITACION) {
+    err.textContent = "❌ Código de invitación incorrecto";
+    return;
+  }
+  if (!nombre || !email || !pass) {
+    err.textContent = "❌ Completá todos los campos obligatorios";
+    return;
+  }
+
+  // Verificar que el email no exista
+  const snap = await get(ref(db,"preceptores"));
+  const precs = snap.val() || {};
+  const existe = Object.values(precs).some(p => p.email === email);
+  if (existe) {
+    err.textContent = "❌ Ese email ya está registrado";
+    return;
+  }
+
+  await push(ref(db,"preceptores"), {
+    nombre, email, pass, tel, chatId,
+    turno: "",
+    dias: [],
+    override: false,
+    overrideHasta: 0,
+    activo: true,
+    creadoEn: Date.now()
+  });
+
+  mostrarToast("✅ Registro exitoso. Ya podés iniciar sesión.");
+  showScreen("login");
+};
+
+function mostrarLogin() {
+  $("login-screen").style.display   = "flex";
+  $("register-screen").style.display = "none";
+  $("app-screen").style.display      = "none";
+}
+
+function mostrarApp() {
+  $("login-screen").style.display    = "none";
+  $("register-screen").style.display = "none";
+  $("app-screen").style.display      = "flex";
+  $("user-nombre").textContent = usuarioActual.nombre;
+  $("user-rol").textContent    = usuarioActual.rol === "admin" ? "Administrador" : "Preceptor";
+
+  document.querySelectorAll(".admin-only").forEach(el => {
+    el.style.display = usuarioActual.rol === "admin" ? "" : "none";
+  });
+  document.querySelectorAll(".preceptor-only").forEach(el => {
+    el.style.display = usuarioActual.rol === "preceptor" ? "" : "none";
+  });
+
+  iniciarFirebase();
+  showTab("inicio");
+}
+
+window.showScreen = (screen) => {
+  $("login-screen").style.display    = screen === "login"    ? "flex" : "none";
+  $("register-screen").style.display = screen === "register" ? "flex" : "none";
+};
+
+const savedUser = localStorage.getItem("edusegura_user");
+if (savedUser) {
+  usuarioActual = JSON.parse(savedUser);
+  mostrarApp();
+} else {
+  mostrarLogin();
+}
+
+// ── FIREBASE ──
+function iniciarFirebase() {
+  // Alertas
+  onValue(ref(db,"alertas"), snap => {
+    alertasData = snap.val() || {};
+    actualizarUI();
   });
 
   // Dispositivos
-  onValue(ref(db, "dispositivos"), snap => {
+  onValue(ref(db,"dispositivos"), snap => {
     const data = snap.val() || {};
     const ahora = Date.now();
     let online = 0;
-
     ["master","bano","porton"].forEach(key => {
       const dev = data[key] || {};
-      const activo = dev.timestamp && (ahora - dev.timestamp) < 60000;
+      const activo = dev.timestamp && (ahora - dev.timestamp) < 120000;
       if (activo) online++;
-
-      const el = document.getElementById(`dev-${key}`);
+      const el = $(`dev-${key}`);
       if (!el) return;
-
-      el.querySelector(".dev-dot").className = `dev-dot ${activo ? "online" : "offline"}`;
+      el.querySelector(".dev-dot").className = `dev-dot ${activo?"online":"offline"}`;
       el.querySelector(".dev-estado").textContent = activo ? "Online" : "Offline";
       el.querySelector(".dev-last").textContent = dev.timestamp
-        ? `hace ${Math.round((ahora - dev.timestamp)/1000)}s` : "Sin datos";
+        ? `hace ${Math.round((ahora-dev.timestamp)/1000)}s` : "Sin datos";
     });
-
-    document.getElementById("kpi-disp").textContent = `${online}/3`;
+    $("kpi-disp").textContent = `${online}/3`;
+    $("kpi-disp").className = `kpi-value ${online===3?"green":online>0?"orange":"red"}`;
   });
 
-  // Resolver
-  window.resolverAlerta = async (id) => {
-    await set(ref(db, `alertas/${id}/estado`), "resuelta");
-  };
-
-  window.resolverDesde = () => {
-    const id = document.getElementById("banner-id").dataset.id;
-    if (id) resolverAlerta(id);
-  };
-
-  // Simular
-  window.simularAlerta = async () => {
-    const zonas = ["BANO_TALLERES","PORTON"];
-    const zona = zonas[Math.floor(Math.random()*zonas.length)];
-    const preceptores = ["Juan Pérez","María López","Carlos Gil"];
-    const preceptor = preceptores[Math.floor(Math.random()*preceptores.length)];
-    const dispositivos = { BANO_TALLERES:"ZY8266MOD", PORTON:"ESP32-WROOM" };
-    await push(ref(db,"alertas"), {
-      zona, dispositivo: dispositivos[zona],
-      preceptor, estado:"activa", timestamp: Date.now()
-    });
-  };
-
-  // Heartbeat
-  setInterval(() => {
-    set(ref(db,"dispositivos/master"), {
-      nombre:"Master Sala Profes.", mac:"D8:BF:C0:F6:9E:F7",
-      rssi:-45, timestamp: Date.now()
-    });
-  }, 30000);
+  // Preceptores
+  onValue(ref(db,"preceptores"), snap => {
+    preceptoresData = snap.val() || {};
+    renderPreceptores();
+    renderMiPerfil();
+    actualizarTurnos();
+  });
 
   // Hora
   setInterval(() => {
     const now = new Date();
-    document.getElementById("hora-live").textContent =
-      now.toLocaleString("es-AR", { weekday:"short", day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit" });
-  }, 1000);
+    if ($("hora-live")) $("hora-live").textContent = now.toLocaleString("es-AR",
+      { weekday:"short", day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit" });
+    actualizarTurnos();
+  }, 30000);
 
-  // Navegación tabs
-  window.showTab = (tab) => {
-    document.querySelectorAll(".tab-content").forEach(t => t.style.display = "none");
-    document.querySelectorAll(".nav-tab").forEach(t => t.classList.remove("active"));
-    document.getElementById(`tab-${tab}`).style.display = "block";
-    document.getElementById(`nav-${tab}`).classList.add("active");
-  };
+  if ($("hora-live")) {
+    const now = new Date();
+    $("hora-live").textContent = now.toLocaleString("es-AR",
+      { weekday:"short", day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit" });
+  }
+
+  setInterval(verificarSinConfirmar, 60000);
+}
+
+function actualizarUI() {
+  const lista = Object.entries(alertasData)
+    .map(([k,v]) => ({ id:k, ...v }))
+    .sort((a,b) => (b.timestamp||0) - (a.timestamp||0));
+
+  const hoy = new Date(); hoy.setHours(0,0,0,0);
+  const mes = new Date(); mes.setDate(1); mes.setHours(0,0,0,0);
+
+  const hoyC = lista.filter(a => a.timestamp >= hoy.getTime()).length;
+  const mesC = lista.filter(a => a.timestamp >= mes.getTime()).length;
+  const actC = lista.filter(a => a.estado === "activa").length;
+  const sinC = lista.filter(a => a.estado === "sin_confirmar").length;
+
+  if($("kpi-hoy")) $("kpi-hoy").textContent = hoyC;
+  if($("kpi-mes")) $("kpi-mes").textContent = mesC;
+  if($("kpi-act")) $("kpi-act").textContent = actC;
+  if($("kpi-sin")) $("kpi-sin").textContent = sinC;
+
+  const badge = actC + sinC;
+  if($("nav-badge")) {
+    $("nav-badge").textContent = badge > 0 ? badge : "";
+    $("nav-badge").style.display = badge > 0 ? "flex" : "none";
+  }
+
+  const activa = lista.find(a => a.estado === "activa");
+  const banner = $("alert-banner");
+  if (banner) {
+    if (activa) {
+      banner.style.display = "flex";
+      const nInfo = nivelInfo(activa.nivel);
+      if($("banner-nivel")) $("banner-nivel").textContent = `${nInfo.emoji} ${nInfo.desc}`;
+      if($("banner-zona"))  $("banner-zona").textContent  = zonaNombre(activa.zona);
+      if($("banner-hora"))  $("banner-hora").textContent  = fmtHora(activa.timestamp);
+      if($("banner-id"))    $("banner-id").dataset.id     = activa.id;
+      if (navigator.vibrate) navigator.vibrate([300,100,300,100,300]);
+    } else {
+      banner.style.display = "none";
+    }
+  }
+
+  renderFeed(lista.slice(0,8), "alert-feed");
+  aplicarFiltros(lista);
+}
+
+function renderFeed(lista, containerId) {
+  const feed = $(containerId);
+  if (!feed) return;
+  if (lista.length === 0) {
+    feed.innerHTML = `<div class="empty-state"><div class="empty-icon">📡</div><div>Sin alertas registradas</div></div>`;
+    return;
+  }
+  const esAdmin = usuarioActual?.rol === "admin";
+  feed.innerHTML = lista.map(a => {
+    const nInfo = nivelInfo(a.nivel);
+    return `
+    <div class="alert-card nivel-${a.nivel} ${a.estado==="activa"?"alert-card-active":""}">
+      <div class="alert-card-header">
+        <span class="nivel-badge nivel-${a.nivel}">${nInfo.emoji} ${nInfo.label} — ${nInfo.desc}</span>
+        ${estadoBadge(a.estado)}
+      </div>
+      <div class="alert-card-body">
+        <div class="alert-zona">${zonaNombre(a.zona)}</div>
+        <div class="alert-meta">📅 ${fmtCompleto(a.timestamp)} · 👤 ${a.preceptor||"—"} · ⏱️ ${tiempoTranscurrido(a.timestamp)}</div>
+        ${a.observacion ? `<div class="alert-obs">💬 ${a.observacion}</div>` : ""}
+      </div>
+      <div class="alert-card-actions">
+        ${a.estado==="activa" ? `
+          <button class="btn-action success" onclick="resolverAlerta('${a.id}')">✅ Resolver</button>
+          <button class="btn-action warning" onclick="abrirObs('${a.id}')">💬 Obs.</button>
+        ` : ""}
+        ${a.estado==="sin_confirmar" ? `<button class="btn-action success" onclick="confirmarAlerta('${a.id}')">👍 Confirmar</button>` : ""}
+        ${esAdmin && a.estado==="resuelta" ? `<button class="btn-action muted" onclick="archivarAlerta('${a.id}')">📁 Archivar</button>` : ""}
+        ${esAdmin ? `<button class="btn-action danger" onclick="eliminarAlerta('${a.id}')">🗑️</button>` : ""}
+      </div>
+    </div>`;
+  }).join("");
+}
+
+let filtroEstado = "todos";
+let filtroZona   = "todas";
+let filtroNivel  = "todos";
+
+window.setFiltro = (tipo, valor, btn) => {
+  if (tipo==="estado") filtroEstado = valor;
+  if (tipo==="zona")   filtroZona   = valor;
+  if (tipo==="nivel")  filtroNivel  = valor;
+  document.querySelectorAll(`.filtro-${tipo} .filtro-btn`).forEach(b => b.classList.remove("active"));
+  btn.classList.add("active");
+  const lista = Object.entries(alertasData).map(([k,v])=>({id:k,...v})).sort((a,b)=>(b.timestamp||0)-(a.timestamp||0));
+  aplicarFiltros(lista);
+};
+
+function aplicarFiltros(lista) {
+  let f = lista;
+  if (filtroEstado !== "todos") f = f.filter(a => a.estado === filtroEstado);
+  if (filtroZona   !== "todas") f = f.filter(a => a.zona   === filtroZona);
+  if (filtroNivel  !== "todos") f = f.filter(a => a.nivel  == filtroNivel);
+  renderFeed(f, "alert-feed-full");
+}
+
+// ── ACCIONES ALERTAS ──
+window.resolverAlerta = async (id) => {
+  await set(ref(db,`alertas/${id}/estado`), "resuelta");
+  await set(ref(db,`alertas/${id}/resueltoPor`), usuarioActual.nombre);
+  await set(ref(db,`alertas/${id}/resueltoTs`), Date.now());
+  mostrarToast("✅ Alerta resuelta");
+};
+window.confirmarAlerta = async (id) => {
+  await set(ref(db,`alertas/${id}/estado`), "activa");
+  await set(ref(db,`alertas/${id}/confirmadoPor`), usuarioActual.nombre);
+};
+window.archivarAlerta = async (id) => {
+  await set(ref(db,`alertas/${id}/estado`), "archivada");
+  mostrarToast("📁 Alerta archivada");
+};
+window.eliminarAlerta = async (id) => {
+  if (!confirm("¿Eliminar esta alerta permanentemente?")) return;
+  await remove(ref(db,`alertas/${id}`));
+  mostrarToast("🗑️ Alerta eliminada");
+};
+window.abrirObs = (id) => {
+  $("obs-id").value = id;
+  $("obs-texto").value = "";
+  $("modal-obs").style.display = "flex";
+};
+window.guardarObs = async () => {
+  const id  = $("obs-id").value;
+  const obs = $("obs-texto").value.trim();
+  if (!obs) return;
+  await set(ref(db,`alertas/${id}/observacion`), obs);
+  $("modal-obs").style.display = "none";
+  mostrarToast("💬 Observación guardada");
+};
+window.resolverDesde = () => {
+  const id = $("banner-id")?.dataset.id;
+  if (id) resolverAlerta(id);
+};
+
+function verificarSinConfirmar() {
+  const ahora = Date.now();
+  Object.entries(alertasData).forEach(([id,a]) => {
+    if (a.estado==="activa" && (ahora-a.timestamp)>600000 && !intervaloReenvio[id]) {
+      intervaloReenvio[id] = true;
+      set(ref(db,`alertas/${id}/estado`), "sin_confirmar");
+    }
+  });
+}
+
+window.simularAlerta = async () => {
+  const zonas = ["BANO_TALLERES","PORTON"];
+  const zona  = zonas[Math.floor(Math.random()*zonas.length)];
+  const nivel = Math.ceil(Math.random()*3);
+  const disps = { BANO_TALLERES:"ZY8266MOD", PORTON:"ESP32-WROOM" };
+  const preceptorTurno = getPreceptorDeTurno();
+  await push(ref(db,"alertas"), {
+    zona, nivel, dispositivo:disps[zona],
+    preceptor: preceptorTurno ? preceptorTurno.nombre : "Sin turno asignado",
+    estado:"activa", timestamp:Date.now()
+  });
+  mostrarToast(`🧪 Alerta Nivel ${nivel} simulada`);
+};
+
+// ══════════════════════════════════════
+// GESTIÓN DE PRECEPTORES
+// ══════════════════════════════════════
+
+function getPreceptorDeTurno() {
+  return Object.values(preceptoresData).find(p => p.activo && estaDeTurno(p)) || null;
+}
+
+function actualizarTurnos() {
+  const kpiTurno = $("kpi-turno");
+  const kpiTurnoSub = $("kpi-turno-sub");
+  if (!kpiTurno) return;
+  const p = getPreceptorDeTurno();
+  if (p) {
+    kpiTurno.textContent = p.nombre.split(' ')[0];
+    kpiTurno.className = "kpi-value green";
+    if (kpiTurnoSub) kpiTurnoSub.textContent = p.override ? "Override activo" : TURNOS.find(t=>t.id===p.turno)?.hora || "";
+  } else {
+    kpiTurno.textContent = "—";
+    kpiTurno.className = "kpi-value red";
+    if (kpiTurnoSub) kpiTurnoSub.textContent = "Sin preceptor";
+  }
+}
+
+function renderPreceptores() {
+  const lista = $("preceptores-lista");
+  if (!lista) return;
+
+  const precs = Object.entries(preceptoresData);
+  if (precs.length === 0) {
+    lista.innerHTML = `<div class="empty-state"><div class="empty-icon">👤</div><div>No hay preceptores registrados todavía</div></div>`;
+    return;
+  }
+
+  lista.innerHTML = precs.map(([id, p]) => {
+    const deTurno = estaDeTurno(p);
+    const turnoInfo = TURNOS.find(t => t.id === p.turno);
+    const color = getColorAvatar(p.nombre);
+    return `
+    <div class="prec-card ${deTurno ? "prec-card-active" : ""}">
+      <div class="prec-avatar" style="background:${color}">${getIniciales(p.nombre)}</div>
+      <div class="prec-info">
+        <div class="prec-nombre">${p.nombre}
+          ${deTurno ? '<span class="badge success" style="font-size:10px;margin-left:6px;">De turno</span>' : ""}
+          ${p.override && p.overrideHasta > Date.now() ? '<span class="badge warning" style="font-size:10px;margin-left:6px;">Override</span>' : ""}
+        </div>
+        <div class="prec-meta">${p.email}</div>
+        <div class="prec-meta">📱 ${p.tel || "—"} · 📟 Chat ID: ${p.chatId || "—"}</div>
+        ${turnoInfo ? `<div class="prec-meta">🕐 ${turnoInfo.label} · ${turnoInfo.hora} · Días: ${(p.dias||[]).join(" ")}</div>` : "<div class='prec-meta'>Sin turno asignado</div>"}
+      </div>
+      <div class="prec-actions">
+        ${usuarioActual?.rol === "admin" ? `
+          <button class="btn-action danger" onclick="eliminarPreceptor('${id}')">🗑️</button>
+        ` : ""}
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function renderMiPerfil() {
+  const section = $("mi-perfil-section");
+  if (!section || usuarioActual?.rol !== "preceptor") return;
+
+  const id = usuarioActual.id;
+  const p  = preceptoresData[id];
+  if (!p) return;
+
+  const turnoActual = TURNOS.find(t => t.id === p.turno);
+  const overrideActivo = p.override && p.overrideHasta > Date.now();
+
+  section.innerHTML = `
+    <div class="perfil-card">
+      <div class="perfil-header">
+        <div class="prec-avatar" style="background:${getColorAvatar(p.nombre)};width:52px;height:52px;font-size:20px;">${getIniciales(p.nombre)}</div>
+        <div>
+          <div style="font-size:16px;font-weight:700;">${p.nombre}</div>
+          <div style="font-size:12px;color:var(--text3);font-family:'JetBrains Mono',monospace;">${p.email}</div>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <div class="form-label">Teléfono</div>
+        <input class="form-input-dark" id="perfil-tel" value="${p.tel||""}" placeholder="Ej: 2615001234">
+      </div>
+
+      <div class="form-section">
+        <div class="form-label">Chat ID de Telegram</div>
+        <input class="form-input-dark" id="perfil-chatid" value="${p.chatId||""}" placeholder="Ej: 123456789">
+        <div class="form-hint">Obtenelo hablando con @userinfobot en Telegram</div>
+      </div>
+
+      <div class="form-section">
+        <div class="form-label">Mi turno de guardia</div>
+        <select class="form-select-dark" id="perfil-turno">
+          <option value="">Sin turno asignado</option>
+          ${TURNOS.map(t => `<option value="${t.id}" ${p.turno===t.id?"selected":""}>${t.label} (${t.hora})</option>`).join("")}
+        </select>
+      </div>
+
+      <div class="form-section">
+        <div class="form-label">Días activos</div>
+        <div class="dias-selector">
+          ${DIAS.map((d,i) => `
+            <button class="dia-btn ${(p.dias||[]).includes(d)?"active":""}"
+              onclick="toggleDia('${d}',this)">${d}</button>
+          `).join("")}
+        </div>
+      </div>
+
+      <button class="btn-guardar" onclick="guardarPerfil('${id}')">💾 Guardar cambios</button>
+
+      <div class="override-section ${overrideActivo?"override-active":""}">
+        <div class="override-info">
+          <div style="font-weight:600;font-size:13px;">
+            ${overrideActivo ? "✅ Override activo" : "⏱️ Activación manual"}
+          </div>
+          <div style="font-size:11px;color:var(--text3);">
+            ${overrideActivo
+              ? `Disponible hasta las ${new Date(p.overrideHasta).toLocaleTimeString("es-AR",{hour:"2-digit",minute:"2-digit"})}`
+              : "Activarte como disponible por 2 horas aunque no sea tu turno"}
+          </div>
+        </div>
+        <button class="btn-override ${overrideActivo?"btn-override-off":""}"
+          onclick="toggleOverride('${id}',${overrideActivo})">
+          ${overrideActivo ? "🔴 Desactivar" : "🟢 Estoy disponible"}
+        </button>
+      </div>
+    </div>`;
+}
+
+// ── Selección de días ──
+let diasSeleccionados = {};
+window.toggleDia = (dia, btn) => {
+  const id = usuarioActual?.id;
+  if (!id) return;
+  if (!diasSeleccionados[id]) {
+    const p = preceptoresData[id];
+    diasSeleccionados[id] = [...(p?.dias || [])];
+  }
+  const idx = diasSeleccionados[id].indexOf(dia);
+  if (idx === -1) {
+    diasSeleccionados[id].push(dia);
+    btn.classList.add("active");
+  } else {
+    diasSeleccionados[id].splice(idx,1);
+    btn.classList.remove("active");
+  }
+};
+
+window.guardarPerfil = async (id) => {
+  const tel    = $("perfil-tel").value.trim();
+  const chatId = $("perfil-chatid").value.trim();
+  const turno  = $("perfil-turno").value;
+  const dias   = diasSeleccionados[id] || preceptoresData[id]?.dias || [];
+
+  await set(ref(db,`preceptores/${id}/tel`),    tel);
+  await set(ref(db,`preceptores/${id}/chatId`), chatId);
+  await set(ref(db,`preceptores/${id}/turno`),  turno);
+  await set(ref(db,`preceptores/${id}/dias`),   dias);
+
+  mostrarToast("✅ Perfil actualizado correctamente");
+};
+
+window.toggleOverride = async (id, activo) => {
+  if (activo) {
+    await set(ref(db,`preceptores/${id}/override`),      false);
+    await set(ref(db,`preceptores/${id}/overrideHasta`), 0);
+    mostrarToast("🔴 Override desactivado");
+  } else {
+    const hasta = Date.now() + 2 * 60 * 60 * 1000; // 2 horas
+    await set(ref(db,`preceptores/${id}/override`),      true);
+    await set(ref(db,`preceptores/${id}/overrideHasta`), hasta);
+    mostrarToast("🟢 Disponible por las próximas 2 horas");
+  }
+};
+
+window.eliminarPreceptor = async (id) => {
+  if (!confirm("¿Dar de baja a este preceptor? No podrá iniciar sesión.")) return;
+  await set(ref(db,`preceptores/${id}/activo`), false);
+  mostrarToast("⚠️ Preceptor dado de baja");
+};
+
+// ── Admin ──
+window.archivarTodas = async () => {
+  const snap = await get(ref(db,"alertas"));
+  const data = snap.val() || {};
+  await Promise.all(
+    Object.entries(data)
+      .filter(([,v]) => v.estado === "resuelta")
+      .map(([k]) => set(ref(db,`alertas/${k}/estado`), "archivada"))
+  );
+  mostrarToast("📁 Alertas resueltas archivadas");
+};
+
+window.borrarHistorial = async () => {
+  if (!confirm("⚠️ ¿Borrar TODAS las alertas? Esta acción no se puede deshacer.")) return;
+  await remove(ref(db,"alertas"));
+  mostrarToast("🗑️ Historial eliminado");
+};
+
+// ── NAVEGACIÓN ──
+window.showTab = (tab) => {
+  document.querySelectorAll(".tab-content").forEach(t => t.style.display = "none");
+  document.querySelectorAll(".nav-tab, .desktop-tab").forEach(t => t.classList.remove("active"));
+  const tc = $(`tab-${tab}`);
+  if (tc) tc.style.display = "block";
+  const mob = $(`nav-${tab}`);
+  const dsk = $(`dnav-${tab}`);
+  if (mob) mob.classList.add("active");
+  if (dsk) dsk.classList.add("active");
+
+  if (tab === "alertas") {
+    const lista = Object.entries(alertasData).map(([k,v])=>({id:k,...v})).sort((a,b)=>(b.timestamp||0)-(a.timestamp||0));
+    aplicarFiltros(lista);
+  }
+  if (tab === "preceptores") {
+    renderPreceptores();
+    renderMiPerfil();
+  }
+};
+
+// ── TOAST ──
+window.mostrarToast = (msg) => {
+  const t = document.createElement("div");
+  t.className = "toast";
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.classList.add("show"), 10);
+  setTimeout(() => { t.classList.remove("show"); setTimeout(()=>t.remove(),300); }, 3000);
+};
 </script>
 
 <style>
-/* ── TEMA AUTOMÁTICO ── */
 :root {
   --bg: #f0f4f8;
   --surface: #ffffff;
@@ -193,7 +716,7 @@
   --text: #0f172a;
   --text2: #475569;
   --text3: #94a3b8;
-  --accent: #1d4ed8;
+  --accent: #2563eb;
   --accent-light: #eff6ff;
   --danger: #ef4444;
   --danger-light: #fef2f2;
@@ -201,34 +724,39 @@
   --success-light: #f0fdf4;
   --warning: #f59e0b;
   --warning-light: #fffbeb;
+  --orange: #f97316;
+  --orange-light: #fff7ed;
   --purple: #8b5cf6;
   --purple-light: #f5f3ff;
   --shadow: 0 1px 3px rgba(0,0,0,0.06), 0 4px 16px rgba(0,0,0,0.04);
+  --shadow-md: 0 4px 24px rgba(0,0,0,0.1);
+  --sidebar-w: 220px;
   --nav-h: 64px;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0a0e1a;
-    --surface: #0f1629;
-    --surface2: #141e35;
-    --border: #1e2d4a;
+    --bg: #060b14;
+    --surface: #0d1526;
+    --surface2: #111d35;
+    --border: #1a2840;
     --text: #e2e8f0;
-    --text2: #94a3b8;
-    --text3: #4a6080;
-    --accent-light: rgba(29,78,216,0.15);
+    --text2: #8899b4;
+    --text3: #3d5273;
+    --accent-light: rgba(37,99,235,0.15);
     --danger-light: rgba(239,68,68,0.12);
     --success-light: rgba(34,197,94,0.12);
     --warning-light: rgba(245,158,11,0.12);
+    --orange-light: rgba(249,115,22,0.12);
     --purple-light: rgba(139,92,246,0.12);
-    --shadow: 0 1px 3px rgba(0,0,0,0.3), 0 4px 16px rgba(0,0,0,0.2);
+    --shadow: 0 1px 3px rgba(0,0,0,0.4), 0 4px 16px rgba(0,0,0,0.3);
   }
 }
 
 * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
 
 body {
-  font-family:'DM Sans',sans-serif;
+  font-family:'Sora',sans-serif;
   background:var(--bg);
   color:var(--text);
   font-size:14px;
@@ -236,731 +764,545 @@ body {
   padding-bottom:var(--nav-h);
 }
 
-/* ── TOPBAR ── */
-.topbar {
-  background:var(--surface);
-  border-bottom:1px solid var(--border);
-  padding:12px 16px;
+/* ── LOGIN ── */
+#login-screen, #register-screen {
+  min-height:100vh;
   display:flex;
   align-items:center;
-  justify-content:space-between;
-  position:sticky;
-  top:0;
-  z-index:100;
-  box-shadow:var(--shadow);
+  justify-content:center;
+  background:linear-gradient(135deg,#0f172a 0%,#1e3a5f 50%,#0f172a 100%);
 }
 
-.topbar-logo {
-  display:flex;
-  align-items:center;
-  gap:10px;
-}
+#register-screen { display:none; }
 
-.logo-icon {
-  width:36px; height:36px;
-  background:var(--accent);
-  border-radius:10px;
-  display:flex; align-items:center; justify-content:center;
-  font-size:18px;
-  flex-shrink:0;
-}
-
-.logo-text { font-size:15px; font-weight:700; }
-.logo-sub  { font-size:10px; color:var(--text3); font-family:'DM Mono',monospace; }
-
-.topbar-right { display:flex; align-items:center; gap:8px; }
-
-.hora-chip {
-  background:var(--surface2);
-  border:1px solid var(--border);
+.login-card {
+  background:rgba(255,255,255,0.04);
+  border:1px solid rgba(255,255,255,0.08);
   border-radius:20px;
-  padding:4px 10px;
-  font-size:11px;
-  font-family:'DM Mono',monospace;
-  color:var(--text2);
-}
-
-.btn-sim {
-  background:var(--danger);
-  color:#fff;
-  border:none;
-  border-radius:8px;
-  padding:8px 12px;
-  font-size:12px;
-  font-weight:700;
-  cursor:pointer;
-  font-family:'DM Sans',sans-serif;
-  white-space:nowrap;
-}
-
-/* ── ALERT BANNER ── */
-.alert-banner {
-  display:none;
-  background:var(--danger);
-  color:#fff;
-  padding:12px 16px;
-  flex-direction:column;
-  gap:8px;
-  animation:slideDown 0.3s ease;
-  position:sticky;
-  top:61px;
-  z-index:99;
-}
-
-@keyframes slideDown {
-  from { transform:translateY(-100%); }
-  to   { transform:translateY(0); }
-}
-
-.banner-title {
-  font-size:15px;
-  font-weight:700;
-  display:flex;
-  align-items:center;
-  gap:8px;
-}
-
-.banner-shake { animation:shake 0.5s infinite; display:inline-block; }
-
-@keyframes shake {
-  0%,100%{transform:rotate(0)} 25%{transform:rotate(-15deg)} 75%{transform:rotate(15deg)}
-}
-
-.banner-sub {
-  font-size:12px;
-  opacity:0.85;
-  font-family:'DM Mono',monospace;
-}
-
-.btn-banner-resolve {
-  background:#fff;
-  color:var(--danger);
-  border:none;
-  border-radius:8px;
-  padding:10px 16px;
-  font-size:13px;
-  font-weight:700;
-  cursor:pointer;
-  font-family:'DM Sans',sans-serif;
+  padding:36px;
   width:100%;
+  max-width:420px;
+  margin:20px;
+  backdrop-filter:blur(20px);
+  box-shadow:0 20px 60px rgba(0,0,0,0.5);
+  animation:fadeUp 0.4s ease;
 }
 
-/* ── CONTENT ── */
-.content {
-  padding:16px;
-  max-width:900px;
-  margin:0 auto;
-}
+@keyframes fadeUp { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
 
-/* ── KPI GRID ── */
-.kpi-grid {
-  display:grid;
-  grid-template-columns:repeat(2,1fr);
-  gap:12px;
-  margin-bottom:16px;
-}
+.login-logo { text-align:center; margin-bottom:24px; }
+.login-icon { width:56px;height:56px;background:linear-gradient(135deg,#2563eb,#7c3aed);border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:28px;margin:0 auto 12px;box-shadow:0 8px 30px rgba(37,99,235,0.4); }
+.login-title { font-size:20px;font-weight:800;color:#fff;letter-spacing:-0.5px; }
+.login-sub { font-size:11px;color:rgba(255,255,255,0.4);font-family:'JetBrains Mono',monospace;margin-top:3px; }
 
-@media (min-width:600px) {
-  .kpi-grid { grid-template-columns:repeat(4,1fr); }
-}
+.form-group { margin-bottom:14px; }
+.form-label-white { display:block;font-size:11px;font-weight:600;color:rgba(255,255,255,0.5);margin-bottom:5px;text-transform:uppercase;letter-spacing:0.5px; }
+.form-input-white { width:100%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:9px;padding:11px 13px;color:#fff;font-size:14px;font-family:'Sora',sans-serif;outline:none;transition:all 0.2s; }
+.form-input-white:focus { border-color:rgba(37,99,235,0.6);background:rgba(37,99,235,0.08); }
+.form-input-white::placeholder { color:rgba(255,255,255,0.2); }
 
-.kpi-card {
-  background:var(--surface);
-  border:1px solid var(--border);
-  border-radius:14px;
-  padding:14px;
+.btn-login { width:100%;background:linear-gradient(135deg,#2563eb,#1d4ed8);color:#fff;border:none;border-radius:10px;padding:12px;font-size:14px;font-weight:700;cursor:pointer;font-family:'Sora',sans-serif;margin-top:6px;transition:all 0.2s; }
+.btn-login:hover { transform:translateY(-1px);box-shadow:0 8px 24px rgba(37,99,235,0.4); }
+
+.login-error { color:#f87171;font-size:12px;text-align:center;margin-top:8px;min-height:18px;font-family:'JetBrains Mono',monospace; }
+.login-link { text-align:center;margin-top:14px;font-size:12px;color:rgba(255,255,255,0.4); }
+.login-link a { color:#93c5fd;cursor:pointer;text-decoration:underline; }
+
+/* ── APP ── */
+#app-screen { display:none;min-height:100vh; }
+
+.sidebar {
+  width:var(--sidebar-w);background:var(--surface);border-right:1px solid var(--border);
+  display:none;flex-direction:column;position:fixed;top:0;left:0;bottom:0;z-index:100;
   box-shadow:var(--shadow);
-  animation:fadeUp 0.4s ease both;
 }
 
-.kpi-card:nth-child(1){animation-delay:0.05s}
-.kpi-card:nth-child(2){animation-delay:0.10s}
-.kpi-card:nth-child(3){animation-delay:0.15s}
-.kpi-card:nth-child(4){animation-delay:0.20s}
-
-@keyframes fadeUp {
-  from{opacity:0;transform:translateY(10px)}
-  to{opacity:1;transform:translateY(0)}
+@media (min-width:768px) {
+  .sidebar { display:flex; }
+  #app-screen { flex-direction:row; }
+  .main { margin-left:var(--sidebar-w); }
+  .bottom-nav { display:none !important; }
+  body { padding-bottom:0; }
 }
 
-.kpi-icon { font-size:22px; margin-bottom:6px; }
-.kpi-value {
-  font-size:28px;
-  font-weight:700;
-  letter-spacing:-1px;
-  line-height:1;
-  margin-bottom:4px;
-}
+.sidebar-logo { padding:18px 14px;border-bottom:1px solid var(--border); }
+.logo-row { display:flex;align-items:center;gap:10px; }
+.logo-icon { width:36px;height:36px;background:linear-gradient(135deg,#2563eb,#7c3aed);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0; }
+.logo-name { font-size:14px;font-weight:800;letter-spacing:-0.3px; }
+.logo-inst { font-size:10px;color:var(--text3);font-family:'JetBrains Mono',monospace; }
+
+.sidebar-nav { flex:1;padding:10px 8px;display:flex;flex-direction:column;gap:2px;overflow-y:auto; }
+.nav-section { font-size:10px;font-weight:700;color:var(--text3);letter-spacing:1.5px;text-transform:uppercase;padding:10px 8px 4px;font-family:'JetBrains Mono',monospace; }
+.desktop-tab { display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:8px;cursor:pointer;transition:all 0.15s;color:var(--text2);font-size:13px;font-weight:500;border:none;background:transparent;font-family:'Sora',sans-serif;width:100%;text-align:left; }
+.desktop-tab:hover { background:var(--surface2);color:var(--text); }
+.desktop-tab.active { background:var(--accent-light);color:var(--accent);font-weight:600; }
+.tab-icon { font-size:16px;width:20px;text-align:center;flex-shrink:0; }
+
+.sidebar-footer { padding:12px 10px;border-top:1px solid var(--border); }
+.user-card { display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;cursor:pointer;transition:background 0.15s; }
+.user-card:hover { background:var(--surface2); }
+.user-avatar { width:34px;height:34px;background:linear-gradient(135deg,#2563eb,#7c3aed);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:#fff;flex-shrink:0; }
+.user-name { font-size:12px;font-weight:600; }
+.user-role-text { font-size:10px;color:var(--text3);font-family:'JetBrains Mono',monospace; }
+.btn-logout { width:100%;margin-top:8px;background:var(--danger-light);color:var(--danger);border:1px solid rgba(239,68,68,0.2);border-radius:8px;padding:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Sora',sans-serif;transition:all 0.15s; }
+.btn-logout:hover { background:var(--danger);color:#fff; }
+
+.main { flex:1;display:flex;flex-direction:column;min-height:100vh; }
+
+.topbar { background:var(--surface);border-bottom:1px solid var(--border);padding:12px 16px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:90;box-shadow:var(--shadow); }
+.topbar-left { display:flex;align-items:center;gap:12px; }
+.mobile-logo { display:flex;align-items:center;gap:8px; }
+@media (min-width:768px) { .mobile-logo { display:none; } }
+.topbar-title { font-size:15px;font-weight:700;letter-spacing:-0.3px; }
+.topbar-right { display:flex;align-items:center;gap:8px; }
+.hora-chip { background:var(--surface2);border:1px solid var(--border);border-radius:20px;padding:4px 10px;font-size:11px;font-family:'JetBrains Mono',monospace;color:var(--text2);display:none; }
+@media (min-width:480px) { .hora-chip { display:block; } }
+.btn-sim { background:var(--danger);color:#fff;border:none;border-radius:8px;padding:8px 12px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Sora',sans-serif;transition:all 0.15s; }
+.btn-sim:hover { background:#dc2626; }
+
+.alert-banner { display:none;padding:14px 16px;flex-direction:column;gap:10px;position:sticky;top:61px;z-index:89;animation:slideDown 0.3s ease; }
+.alert-banner.nivel-1 { background:#d97706; }
+.alert-banner.nivel-2 { background:#ea580c; }
+.alert-banner.nivel-3 { background:var(--danger); }
+@keyframes slideDown { from{transform:translateY(-100%)} to{transform:translateY(0)} }
+.banner-nivel { font-size:12px;font-weight:700;color:rgba(255,255,255,0.8);font-family:'JetBrains Mono',monospace; }
+.banner-title { font-size:16px;font-weight:800;color:#fff;display:flex;align-items:center;gap:8px; }
+.banner-shake { animation:shake 0.6s infinite;display:inline-block; }
+@keyframes shake { 0%,100%{transform:rotate(0)} 25%{transform:rotate(-12deg)} 75%{transform:rotate(12deg)} }
+.banner-sub { font-size:12px;color:rgba(255,255,255,0.8);font-family:'JetBrains Mono',monospace; }
+.btn-banner-resolve { background:#fff;border:none;border-radius:10px;padding:11px 16px;font-size:13px;font-weight:700;cursor:pointer;font-family:'Sora',sans-serif;width:100%; }
+.alert-banner.nivel-1 .btn-banner-resolve { color:#d97706; }
+.alert-banner.nivel-2 .btn-banner-resolve { color:#ea580c; }
+.alert-banner.nivel-3 .btn-banner-resolve { color:var(--danger); }
+
+.content { padding:16px;max-width:1000px;width:100%;margin:0 auto; }
+@media (min-width:768px) { .content { padding:24px 28px; } }
+
+.kpi-grid { display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:20px; }
+@media (min-width:600px) { .kpi-grid { grid-template-columns:repeat(4,1fr); } }
+
+.kpi-card { background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px;box-shadow:var(--shadow);animation:fadeUp 0.4s ease both;transition:transform 0.2s; }
+.kpi-card:hover { transform:translateY(-2px); }
+.kpi-card:nth-child(1){animation-delay:0.05s} .kpi-card:nth-child(2){animation-delay:0.10s}
+.kpi-card:nth-child(3){animation-delay:0.15s} .kpi-card:nth-child(4){animation-delay:0.20s}
+
+.kpi-icon { font-size:24px;margin-bottom:8px; }
+.kpi-value { font-size:28px;font-weight:800;letter-spacing:-1px;line-height:1;margin-bottom:4px;transition:all 0.3s; }
+.kpi-label { font-size:11px;color:var(--text3);font-weight:500;text-transform:uppercase;letter-spacing:0.5px; }
+.kpi-sub { font-size:10px;color:var(--text3);font-family:'JetBrains Mono',monospace;margin-top:2px; }
 
 .kpi-value.red    { color:var(--danger); }
 .kpi-value.green  { color:var(--success); }
-.kpi-value.blue   { color:var(--accent); }
+.kpi-value.orange { color:var(--orange); }
 .kpi-value.purple { color:var(--purple); }
+.kpi-value.blue   { color:var(--accent); }
 
-.kpi-label {
-  font-size:11px;
-  color:var(--text3);
-  font-weight:500;
-  text-transform:uppercase;
-  letter-spacing:0.5px;
-}
-
-.live-dot {
-  display:inline-block;
-  width:6px; height:6px;
-  background:var(--danger);
-  border-radius:50%;
-  margin-right:4px;
-  animation:pulse 1.5s infinite;
-}
-
+.live-dot { display:inline-block;width:6px;height:6px;background:var(--danger);border-radius:50%;margin-right:4px;animation:pulse 1.5s infinite; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
 
-/* ── TAB CONTENT ── */
-.tab-content { display:none; animation:fadeUp 0.3s ease; }
-.tab-content:first-of-type { display:block; }
+.section-header { display:flex;align-items:center;justify-content:space-between;margin-bottom:12px; }
+.section-title { font-size:13px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:0.8px;font-family:'JetBrains Mono',monospace; }
 
-/* ── SECTION TITLE ── */
-.section-title {
-  font-size:13px;
-  font-weight:700;
-  color:var(--text2);
-  text-transform:uppercase;
-  letter-spacing:0.8px;
-  margin-bottom:10px;
-  font-family:'DM Mono',monospace;
-  display:flex;
-  align-items:center;
-  gap:8px;
+.alert-feed { display:flex;flex-direction:column;gap:10px;margin-bottom:20px; }
+.alert-card { background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px;box-shadow:var(--shadow);animation:fadeUp 0.3s ease;border-left:4px solid var(--border); }
+.alert-card.nivel-1 { border-left-color:var(--warning); }
+.alert-card.nivel-2 { border-left-color:var(--orange); }
+.alert-card.nivel-3 { border-left-color:var(--danger); }
+.alert-card-active { animation:cardPulse 1.2s infinite alternate; }
+@keyframes cardPulse { from{box-shadow:var(--shadow)} to{box-shadow:0 0 20px rgba(239,68,68,0.2)} }
+.alert-card-header { display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:6px; }
+.nivel-badge { font-size:11px;font-weight:700;padding:3px 9px;border-radius:20px;font-family:'JetBrains Mono',monospace; }
+.nivel-badge.nivel-1 { background:var(--warning-light);color:#92400e; }
+.nivel-badge.nivel-2 { background:var(--orange-light);color:#9a3412; }
+.nivel-badge.nivel-3 { background:var(--danger-light);color:#991b1b; }
+.alert-zona { font-size:14px;font-weight:700;margin-bottom:4px; }
+.alert-meta { font-size:11px;color:var(--text3);font-family:'JetBrains Mono',monospace;margin-bottom:3px; }
+.alert-obs { font-size:12px;color:var(--text2);background:var(--surface2);border-radius:6px;padding:6px 10px;margin-top:6px; }
+.alert-card-actions { display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border); }
+
+.btn-action { padding:6px 12px;border-radius:8px;border:none;font-size:12px;font-weight:600;cursor:pointer;font-family:'Sora',sans-serif;transition:all 0.15s; }
+.btn-action.success { background:var(--success-light);color:#166534; }
+.btn-action.success:hover { background:var(--success);color:#fff; }
+.btn-action.warning { background:var(--warning-light);color:#92400e; }
+.btn-action.danger  { background:var(--danger-light);color:#991b1b; }
+.btn-action.danger:hover { background:var(--danger);color:#fff; }
+.btn-action.muted   { background:var(--surface2);color:var(--text2);border:1px solid var(--border); }
+
+.filtros { display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px; }
+.filtros-group { display:flex;gap:4px;flex-wrap:wrap; }
+.filtro-btn { padding:5px 12px;border-radius:20px;border:1px solid var(--border);background:var(--surface2);color:var(--text2);font-size:12px;font-weight:500;cursor:pointer;font-family:'Sora',sans-serif;transition:all 0.15s; }
+.filtro-btn.active { background:var(--accent);color:#fff;border-color:var(--accent); }
+
+.badge { display:inline-flex;align-items:center;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:600;font-family:'JetBrains Mono',monospace; }
+.badge.danger  { background:var(--danger-light);color:#991b1b; }
+.badge.success { background:var(--success-light);color:#166534; }
+.badge.warning { background:var(--warning-light);color:#92400e; }
+.badge.info    { background:var(--accent-light);color:#1e40af; }
+.badge.muted   { background:var(--surface2);color:var(--text3);border:1px solid var(--border); }
+
+.tab-content { display:none;animation:fadeUp 0.3s ease; }
+
+/* ── PRECEPTORES ── */
+.prec-card {
+  background:var(--surface);border:1px solid var(--border);border-radius:14px;
+  padding:14px 16px;box-shadow:var(--shadow);display:flex;align-items:center;
+  gap:14px;margin-bottom:10px;transition:all 0.2s;
 }
-
-.section-title::after {
-  content:'';
-  flex:1;
-  height:1px;
-  background:var(--border);
+.prec-card-active {
+  border-color:var(--success);
+  box-shadow:0 0 0 2px rgba(34,197,94,0.15);
 }
-
-/* ── ALERT CARDS ── */
-.alert-feed { display:flex; flex-direction:column; gap:10px; margin-bottom:16px; }
-
-.alert-card {
-  background:var(--surface);
-  border:1px solid var(--border);
-  border-radius:12px;
-  padding:14px;
-  box-shadow:var(--shadow);
-  display:flex;
-  align-items:flex-start;
-  justify-content:space-between;
-  gap:10px;
-  transition:transform 0.15s;
+.prec-avatar {
+  width:46px;height:46px;border-radius:50%;display:flex;align-items:center;
+  justify-content:center;font-size:16px;font-weight:800;color:#fff;flex-shrink:0;
 }
+.prec-info { flex:1; }
+.prec-nombre { font-size:14px;font-weight:700;margin-bottom:3px;display:flex;align-items:center;flex-wrap:wrap;gap:4px; }
+.prec-meta { font-size:11px;color:var(--text3);font-family:'JetBrains Mono',monospace;margin-top:2px; }
+.prec-actions { display:flex;gap:8px;flex-shrink:0; }
 
-.alert-card:active { transform:scale(0.98); }
+/* ── MI PERFIL ── */
+.perfil-card { background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px;box-shadow:var(--shadow); }
+.perfil-header { display:flex;align-items:center;gap:14px;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid var(--border); }
+.form-section { margin-bottom:14px; }
+.form-label { font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:6px;font-family:'JetBrains Mono',monospace; }
+.form-hint { font-size:10px;color:var(--text3);margin-top:4px;font-family:'JetBrains Mono',monospace; }
+.form-input-dark { width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;padding:10px 12px;color:var(--text);font-size:14px;font-family:'Sora',sans-serif;outline:none;transition:border-color 0.2s; }
+.form-input-dark:focus { border-color:var(--accent); }
+.form-select-dark { width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:9px;padding:10px 12px;color:var(--text);font-size:14px;font-family:'Sora',sans-serif;outline:none;cursor:pointer; }
+.btn-guardar { width:100%;background:var(--accent);color:#fff;border:none;border-radius:10px;padding:12px;font-size:14px;font-weight:700;cursor:pointer;font-family:'Sora',sans-serif;margin-top:6px;margin-bottom:16px;transition:all 0.15s; }
+.btn-guardar:hover { background:#1d4ed8; }
 
-.alert-card-active {
-  border-color:var(--danger);
-  background:var(--danger-light);
-  animation:cardPulse 1s infinite alternate;
-}
+.dias-selector { display:flex;gap:6px;flex-wrap:wrap; }
+.dia-btn { width:36px;height:36px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text2);font-size:12px;font-weight:700;cursor:pointer;font-family:'JetBrains Mono',monospace;transition:all 0.15s; }
+.dia-btn.active { background:var(--accent);color:#fff;border-color:var(--accent); }
 
-@keyframes cardPulse {
-  from { box-shadow:0 0 0 rgba(239,68,68,0); }
-  to   { box-shadow:0 0 16px rgba(239,68,68,0.2); }
-}
+.override-section { display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px;background:var(--surface2);border:1px solid var(--border);border-radius:12px; }
+.override-active { border-color:var(--success);background:var(--success-light); }
+.btn-override { padding:8px 16px;border-radius:8px;border:none;font-size:12px;font-weight:700;cursor:pointer;font-family:'Sora',sans-serif;background:var(--success);color:#fff;white-space:nowrap; }
+.btn-override-off { background:var(--danger); }
 
-.alert-zona { font-size:14px; font-weight:600; margin-bottom:4px; }
-.alert-meta { font-size:11px; color:var(--text3); font-family:'DM Mono',monospace; margin-bottom:3px; }
-.alert-preceptor { font-size:12px; color:var(--text2); }
-
-.alert-card-right {
-  display:flex;
-  flex-direction:column;
-  align-items:flex-end;
-  gap:8px;
-  flex-shrink:0;
-}
-
-.btn-resolve {
-  background:var(--success);
-  color:#fff;
-  border:none;
-  border-radius:8px;
-  padding:6px 12px;
-  font-size:12px;
-  font-weight:700;
-  cursor:pointer;
-  font-family:'DM Sans',sans-serif;
-  white-space:nowrap;
-}
-
-/* ── BADGES ── */
-.badge {
-  display:inline-flex;
-  align-items:center;
-  padding:3px 9px;
-  border-radius:20px;
-  font-size:11px;
-  font-weight:600;
-  font-family:'DM Mono',monospace;
-}
-
-.badge.danger  { background:var(--danger-light);  color:#991b1b; }
-.badge.success { background:var(--success-light); color:#166534; }
-.badge.warning { background:var(--warning-light); color:#92400e; }
-.badge.info    { background:var(--accent-light);  color:#1e40af; }
-
-/* ── DEVICE CARDS ── */
-.device-list { display:flex; flex-direction:column; gap:10px; margin-bottom:16px; }
-
-.device-card {
-  background:var(--surface);
-  border:1px solid var(--border);
-  border-radius:12px;
-  padding:14px;
-  box-shadow:var(--shadow);
-  display:flex;
-  align-items:center;
-  gap:12px;
-}
-
-.dev-icon {
-  width:44px; height:44px;
-  border-radius:12px;
-  background:var(--surface2);
-  display:flex; align-items:center; justify-content:center;
-  font-size:22px;
-  flex-shrink:0;
-}
-
-.dev-name { font-size:13px; font-weight:600; margin-bottom:2px; }
-.dev-mac  { font-size:10px; color:var(--text3); font-family:'DM Mono',monospace; }
-
-.dev-right { margin-left:auto; display:flex; flex-direction:column; align-items:flex-end; gap:4px; }
-
-.dev-status-row { display:flex; align-items:center; gap:5px; font-size:12px; font-weight:600; }
-
-.dev-dot {
-  width:8px; height:8px;
-  border-radius:50%;
-}
-
-.dev-dot.online  { background:var(--success); animation:pulse 2s infinite; }
+/* ── DISPOSITIVOS ── */
+.device-list { display:flex;flex-direction:column;gap:10px;margin-bottom:20px; }
+.device-card { background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px 16px;box-shadow:var(--shadow);display:flex;align-items:center;gap:12px; }
+.dev-icon { width:44px;height:44px;border-radius:12px;background:var(--surface2);display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0; }
+.dev-name { font-size:13px;font-weight:600;margin-bottom:2px; }
+.dev-mac { font-size:10px;color:var(--text3);font-family:'JetBrains Mono',monospace; }
+.dev-right { margin-left:auto;display:flex;flex-direction:column;align-items:flex-end;gap:4px; }
+.dev-status-row { display:flex;align-items:center;gap:5px;font-size:12px;font-weight:600; }
+.dev-dot { width:8px;height:8px;border-radius:50%; }
+.dev-dot.online  { background:var(--success);animation:pulse 2s infinite; }
 .dev-dot.offline { background:var(--danger); }
-
-.dev-last { font-size:10px; color:var(--text3); font-family:'DM Mono',monospace; }
-
-/* ── SCHEDULE CARDS ── */
-.schedule-list { display:flex; flex-direction:column; gap:10px; margin-bottom:16px; }
-
-.schedule-card {
-  background:var(--surface);
-  border:1px solid var(--border);
-  border-radius:12px;
-  padding:14px;
-  box-shadow:var(--shadow);
-  display:flex;
-  align-items:center;
-  gap:12px;
-}
-
-.sched-avatar {
-  width:44px; height:44px;
-  border-radius:50%;
-  display:flex; align-items:center; justify-content:center;
-  font-size:15px; font-weight:700; color:#fff;
-  flex-shrink:0;
-}
-
-.sched-name  { font-size:13px; font-weight:600; margin-bottom:2px; }
-.sched-time  { font-size:11px; color:var(--text3); font-family:'DM Mono',monospace; }
-
-.sched-days {
-  margin-left:auto;
-  display:flex;
-  gap:3px;
-}
-
-.day {
-  width:24px; height:24px;
-  border-radius:6px;
-  display:flex; align-items:center; justify-content:center;
-  font-size:9px; font-weight:700;
-  background:var(--surface2);
-  color:var(--text3);
-  border:1px solid var(--border);
-  font-family:'DM Mono',monospace;
-}
-
-.day.on    { background:var(--accent); color:#fff; border-color:var(--accent); }
-.day.today { background:var(--success); color:#fff; border-color:var(--success); }
-
-/* ── EMPTY STATE ── */
-.empty-state {
-  padding:40px 20px;
-  text-align:center;
-  color:var(--text3);
-  font-family:'DM Mono',monospace;
-  font-size:12px;
-}
-
-.empty-icon { font-size:36px; margin-bottom:10px; }
+.dev-last { font-size:10px;color:var(--text3);font-family:'JetBrains Mono',monospace; }
 
 /* ── BOTTOM NAV ── */
-.bottom-nav {
-  position:fixed;
-  bottom:0; left:0; right:0;
-  height:var(--nav-h);
-  background:var(--surface);
-  border-top:1px solid var(--border);
-  display:flex;
-  z-index:100;
-  box-shadow:0 -4px 20px rgba(0,0,0,0.08);
-}
-
-.nav-tab {
-  flex:1;
-  display:flex;
-  flex-direction:column;
-  align-items:center;
-  justify-content:center;
-  gap:4px;
-  cursor:pointer;
-  transition:all 0.15s;
-  color:var(--text3);
-  font-size:11px;
-  font-weight:500;
-  position:relative;
-  border:none;
-  background:transparent;
-  font-family:'DM Sans',sans-serif;
-}
-
+.bottom-nav { position:fixed;bottom:0;left:0;right:0;height:var(--nav-h);background:var(--surface);border-top:1px solid var(--border);display:flex;z-index:100;box-shadow:0 -4px 20px rgba(0,0,0,0.06); }
+.nav-tab { flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;cursor:pointer;color:var(--text3);font-size:10px;font-weight:500;border:none;background:transparent;font-family:'Sora',sans-serif;transition:color 0.15s; }
 .nav-tab.active { color:var(--accent); }
+.nav-tab-icon { font-size:20px; }
+.nav-badge { position:absolute;top:6px;right:calc(50% - 20px);background:var(--danger);color:#fff;font-size:9px;font-weight:700;width:16px;height:16px;border-radius:50%;display:none;align-items:center;justify-content:center;font-family:'JetBrains Mono',monospace; }
 
-.nav-tab-icon { font-size:22px; }
+/* ── MODAL ── */
+.modal-overlay { display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:200;align-items:center;justify-content:center;padding:20px;backdrop-filter:blur(4px); }
+.modal { background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:24px;width:100%;max-width:400px;box-shadow:var(--shadow-md);animation:fadeUp 0.3s ease; }
+.modal-title { font-size:16px;font-weight:700;margin-bottom:16px; }
+.modal-input { width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:12px;color:var(--text);font-size:14px;font-family:'Sora',sans-serif;resize:vertical;min-height:100px;outline:none; }
+.modal-input:focus { border-color:var(--accent); }
+.modal-actions { display:flex;gap:10px;margin-top:16px; }
+.btn-modal { flex:1;padding:11px;border-radius:10px;border:none;font-size:13px;font-weight:600;cursor:pointer;font-family:'Sora',sans-serif; }
+.btn-modal.primary { background:var(--accent);color:#fff; }
+.btn-modal.ghost { background:var(--surface2);color:var(--text2);border:1px solid var(--border); }
 
-.nav-badge-wrap { position:relative; }
+.empty-state { padding:36px 20px;text-align:center;color:var(--text3);font-size:13px; }
+.empty-icon { font-size:36px;margin-bottom:10px; }
 
-.nav-badge {
-  position:absolute;
-  top:-4px; right:-8px;
-  background:var(--danger);
-  color:#fff;
-  font-size:9px;
-  font-weight:700;
-  width:16px; height:16px;
-  border-radius:50%;
-  display:none;
-  align-items:center;
-  justify-content:center;
-  font-family:'DM Mono',monospace;
-}
-
-/* ── INSTALL BANNER ── */
-.install-banner {
-  background:var(--accent);
-  color:#fff;
-  padding:12px 16px;
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap:10px;
-}
-
-.install-text { font-size:13px; font-weight:600; }
-.install-sub  { font-size:11px; opacity:0.8; }
-
-.btn-install {
-  background:#fff;
-  color:var(--accent);
-  border:none;
-  border-radius:8px;
-  padding:8px 14px;
-  font-size:12px;
-  font-weight:700;
-  cursor:pointer;
-  font-family:'DM Sans',sans-serif;
-  white-space:nowrap;
-}
-
-/* ── DESKTOP ── */
-@media (min-width:768px) {
-  body { padding-bottom:0; }
-  .bottom-nav { display:none; }
-
-  .desktop-nav {
-    display:flex !important;
-    background:var(--surface);
-    border-bottom:1px solid var(--border);
-    padding:0 24px;
-    gap:4px;
-  }
-
-  .desktop-tab {
-    padding:12px 16px;
-    font-size:13px;
-    font-weight:600;
-    cursor:pointer;
-    color:var(--text3);
-    border-bottom:2px solid transparent;
-    transition:all 0.15s;
-    border:none;
-    background:transparent;
-    font-family:'DM Sans',sans-serif;
-    display:flex;
-    align-items:center;
-    gap:6px;
-  }
-
-  .desktop-tab.active {
-    color:var(--accent);
-    border-bottom:2px solid var(--accent);
-  }
-
-  .content { padding:24px; }
-  .kpi-grid { grid-template-columns:repeat(4,1fr); }
-}
-
-.desktop-nav { display:none; }
+.toast { position:fixed;bottom:80px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--text);color:var(--bg);padding:10px 20px;border-radius:20px;font-size:13px;font-weight:600;opacity:0;transition:all 0.3s;z-index:300;white-space:nowrap;box-shadow:var(--shadow-md); }
+.toast.show { opacity:1;transform:translateX(-50%) translateY(0); }
 </style>
 </head>
 <body>
 
-<!-- TOPBAR -->
-<div class="topbar">
-  <div class="topbar-logo">
-    <div class="logo-icon">🛡️</div>
-    <div>
-      <div class="logo-text">EduSegura LUMINA</div>
-      <div class="logo-sub">EPET N°15</div>
+<!-- LOGIN -->
+<div id="login-screen">
+  <div class="login-card">
+    <div class="login-logo">
+      <div class="login-icon">🛡️</div>
+      <div class="login-title">EduSegura LUMINA</div>
+      <div class="login-sub">EPET N°15 · Laboratorio III · 2026</div>
     </div>
-  </div>
-  <div class="topbar-right">
-    <div class="hora-chip" id="hora-live">--:--</div>
-    <button class="btn-sim" onclick="simularAlerta()">🧪 Test</button>
+    <div class="form-group">
+      <label class="form-label-white">Email institucional</label>
+      <input class="form-input-white" id="login-email" type="email" placeholder="usuario@epet15.edu.ar" onkeydown="if(event.key==='Enter') login()">
+    </div>
+    <div class="form-group">
+      <label class="form-label-white">Contraseña</label>
+      <input class="form-input-white" id="login-pass" type="password" placeholder="••••••••" onkeydown="if(event.key==='Enter') login()">
+    </div>
+    <button class="btn-login" onclick="login()">Ingresar al sistema</button>
+    <div class="login-error" id="login-error"></div>
+    <div class="login-link">¿Sos preceptor nuevo? <a onclick="showScreen('register')">Registrate con código de invitación</a></div>
   </div>
 </div>
 
-<!-- DESKTOP NAV -->
-<div class="desktop-nav" id="desktop-nav">
-  <button class="desktop-tab active" id="dnav-inicio" onclick="showTab('inicio'); setDesktopTab('inicio')">📊 Dashboard</button>
-  <button class="desktop-tab" id="dnav-alertas" onclick="showTab('alertas'); setDesktopTab('alertas')">🚨 Alertas</button>
-  <button class="desktop-tab" id="dnav-dispositivos" onclick="showTab('dispositivos'); setDesktopTab('dispositivos')">📡 Dispositivos</button>
-  <button class="desktop-tab" id="dnav-horarios" onclick="showTab('horarios'); setDesktopTab('horarios')">🕐 Horarios</button>
+<!-- REGISTRO -->
+<div id="register-screen">
+  <div class="login-card">
+    <div class="login-logo">
+      <div class="login-icon">👤</div>
+      <div class="login-title">Registro de Preceptor</div>
+      <div class="login-sub">Necesitás el código de invitación del admin</div>
+    </div>
+    <div class="form-group">
+      <label class="form-label-white">🔑 Código de invitación *</label>
+      <input class="form-input-white" id="reg-codigo" type="text" placeholder="Pedíselo al administrador">
+    </div>
+    <div class="form-group">
+      <label class="form-label-white">Nombre y apellido *</label>
+      <input class="form-input-white" id="reg-nombre" type="text" placeholder="Ej: Juan Pérez">
+    </div>
+    <div class="form-group">
+      <label class="form-label-white">Email institucional *</label>
+      <input class="form-input-white" id="reg-email" type="email" placeholder="juan@epet15.edu.ar">
+    </div>
+    <div class="form-group">
+      <label class="form-label-white">Contraseña *</label>
+      <input class="form-input-white" id="reg-pass" type="password" placeholder="Mínimo 6 caracteres">
+    </div>
+    <div class="form-group">
+      <label class="form-label-white">Teléfono</label>
+      <input class="form-input-white" id="reg-tel" type="tel" placeholder="Ej: 2615001234">
+    </div>
+    <div class="form-group">
+      <label class="form-label-white">Chat ID de Telegram</label>
+      <input class="form-input-white" id="reg-chatid" type="text" placeholder="Obtenelo con @userinfobot">
+    </div>
+    <button class="btn-login" onclick="registrarPreceptor()">Registrarme</button>
+    <div class="login-error" id="reg-error"></div>
+    <div class="login-link"><a onclick="showScreen('login')">← Volver al login</a></div>
+  </div>
 </div>
 
-<!-- ALERT BANNER -->
-<div class="alert-banner" id="alert-banner">
-  <div class="banner-title">
-    <span class="banner-shake">🚨</span>
-    EMERGENCIA — <span id="banner-zona"></span>
-  </div>
-  <div class="banner-sub">Hora: <span id="banner-hora"></span> · Acudir con CALMA</div>
-  <button class="btn-banner-resolve" onclick="resolverDesde()" id="banner-id">✅ Marcar como resuelta</button>
-</div>
+<!-- APP -->
+<div id="app-screen">
 
-<!-- CONTENT -->
-<div class="content">
-
-  <!-- TAB INICIO -->
-  <div class="tab-content" id="tab-inicio">
-
-    <!-- KPIs -->
-    <div class="kpi-grid">
-      <div class="kpi-card">
-        <div class="kpi-icon">🚨</div>
-        <div class="kpi-value red" id="kpi-hoy">—</div>
-        <div class="kpi-label"><span class="live-dot"></span>Alertas hoy</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-icon">📡</div>
-        <div class="kpi-value green" id="kpi-disp">—</div>
-        <div class="kpi-label"><span class="live-dot"></span>Dispositivos</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-icon">⚠️</div>
-        <div class="kpi-value red" id="kpi-act">—</div>
-        <div class="kpi-label"><span class="live-dot"></span>Activas ahora</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-icon">📈</div>
-        <div class="kpi-value purple" id="kpi-mes">—</div>
-        <div class="kpi-label"><span class="live-dot"></span>Este mes</div>
+  <!-- SIDEBAR -->
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div class="logo-row">
+        <div class="logo-icon">🛡️</div>
+        <div><div class="logo-name">EduSegura</div><div class="logo-inst">LUMINA · EPET N°15</div></div>
       </div>
     </div>
-
-    <!-- Alertas recientes -->
-    <div class="section-title">Alertas recientes</div>
-    <div class="alert-feed" id="alert-feed">
-      <div class="empty-state">
-        <div class="empty-icon">📡</div>
-        Conectando a Firebase...
+    <nav class="sidebar-nav">
+      <div class="nav-section">Principal</div>
+      <button class="desktop-tab active" id="dnav-inicio" onclick="showTab('inicio')"><span class="tab-icon">📊</span> Dashboard</button>
+      <button class="desktop-tab" id="dnav-alertas" onclick="showTab('alertas')"><span class="tab-icon">🚨</span> Alertas</button>
+      <button class="desktop-tab" id="dnav-dispositivos" onclick="showTab('dispositivos')"><span class="tab-icon">📡</span> Dispositivos</button>
+      <div class="nav-section">Gestión</div>
+      <button class="desktop-tab" id="dnav-preceptores" onclick="showTab('preceptores')"><span class="tab-icon">👥</span> Preceptores</button>
+      <div class="nav-section admin-only">Admin</div>
+      <button class="desktop-tab admin-only" id="dnav-admin" onclick="showTab('admin')"><span class="tab-icon">⚙️</span> Administración</button>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="user-card">
+        <div class="user-avatar">MS</div>
+        <div><div class="user-name" id="user-nombre">—</div><div class="user-role-text" id="user-rol">—</div></div>
       </div>
+      <button class="btn-logout" onclick="logout()">🚪 Cerrar sesión</button>
     </div>
+  </aside>
 
-  </div>
+  <!-- MAIN -->
+  <main class="main">
 
-  <!-- TAB ALERTAS -->
-  <div class="tab-content" id="tab-alertas">
-    <div class="section-title">Historial completo</div>
-    <div class="alert-feed" id="alert-feed-2">
-      <div class="empty-state"><div class="empty-icon">📋</div>Cargando...</div>
-    </div>
-  </div>
-
-  <!-- TAB DISPOSITIVOS -->
-  <div class="tab-content" id="tab-dispositivos">
-    <div class="section-title">Estado en tiempo real</div>
-    <div class="device-list">
-
-      <div class="device-card" id="dev-master">
-        <div class="dev-icon">🖥️</div>
-        <div>
-          <div class="dev-name">Master — Sala Profesores</div>
-          <div class="dev-mac">ESP8266MOD · D8:BF:C0:F6:9E:F7</div>
+    <!-- TOPBAR -->
+    <div class="topbar">
+      <div class="topbar-left">
+        <div class="mobile-logo">
+          <div class="logo-icon" style="width:32px;height:32px;font-size:16px;">🛡️</div>
+          <div class="topbar-title">EduSegura</div>
         </div>
-        <div class="dev-right">
-          <div class="dev-status-row">
-            <div class="dev-dot online"></div>
-            <span class="dev-estado">Online</span>
+        <div class="hora-chip" id="hora-live">--:--</div>
+      </div>
+      <div class="topbar-right">
+        <button class="btn-sim" onclick="simularAlerta()">🧪 Simular</button>
+      </div>
+    </div>
+
+    <!-- BANNER -->
+    <div class="alert-banner nivel-3" id="alert-banner">
+      <div>
+        <div class="banner-nivel" id="banner-nivel">🔴 Emergencia</div>
+        <div class="banner-title"><span class="banner-shake">🚨</span> <span id="banner-zona">—</span></div>
+        <div class="banner-sub">⏰ <span id="banner-hora">—</span> · Acudir con CALMA</div>
+      </div>
+      <button class="btn-banner-resolve" onclick="resolverDesde()" id="banner-id">✅ Marcar resuelta</button>
+    </div>
+
+    <!-- CONTENT -->
+    <div class="content">
+
+      <!-- TAB INICIO -->
+      <div class="tab-content" id="tab-inicio">
+        <div class="kpi-grid">
+          <div class="kpi-card"><div class="kpi-icon">🚨</div><div class="kpi-value red" id="kpi-hoy">—</div><div class="kpi-label"><span class="live-dot"></span>Alertas hoy</div></div>
+          <div class="kpi-card"><div class="kpi-icon">📡</div><div class="kpi-value green" id="kpi-disp">—</div><div class="kpi-label"><span class="live-dot"></span>Dispositivos</div></div>
+          <div class="kpi-card"><div class="kpi-icon">⚠️</div><div class="kpi-value orange" id="kpi-sin">—</div><div class="kpi-label"><span class="live-dot"></span>Sin confirmar</div></div>
+          <div class="kpi-card"><div class="kpi-icon">👤</div><div class="kpi-value blue" id="kpi-turno" style="font-size:18px;padding-top:6px;">—</div><div class="kpi-label"><span class="live-dot"></span>De turno</div><div class="kpi-sub" id="kpi-turno-sub">—</div></div>
+        </div>
+        <div class="section-header"><div class="section-title">Alertas recientes</div></div>
+        <div class="alert-feed" id="alert-feed"><div class="empty-state"><div class="empty-icon">📡</div>Conectando a Firebase...</div></div>
+      </div>
+
+      <!-- TAB ALERTAS -->
+      <div class="tab-content" id="tab-alertas">
+        <div class="filtros">
+          <div class="filtros-group filtro-estado">
+            <button class="filtro-btn active" onclick="setFiltro('estado','todos',this)">Todas</button>
+            <button class="filtro-btn" onclick="setFiltro('estado','activa',this)">🔴 Activas</button>
+            <button class="filtro-btn" onclick="setFiltro('estado','sin_confirmar',this)">⚠️ Sin confirmar</button>
+            <button class="filtro-btn" onclick="setFiltro('estado','resuelta',this)">✅ Resueltas</button>
+            <button class="filtro-btn" onclick="setFiltro('estado','archivada',this)">📁 Archivadas</button>
           </div>
-          <div class="dev-last">—</div>
-        </div>
-      </div>
-
-      <div class="device-card" id="dev-bano">
-        <div class="dev-icon">🚻</div>
-        <div>
-          <div class="dev-name">Baño de Talleres</div>
-          <div class="dev-mac">ZY8266MOD · 48:3F:DA:07:45:2F</div>
-        </div>
-        <div class="dev-right">
-          <div class="dev-status-row">
-            <div class="dev-dot offline"></div>
-            <span class="dev-estado">Sin datos</span>
+          <div class="filtros-group filtro-zona">
+            <button class="filtro-btn active" onclick="setFiltro('zona','todas',this)">Todas las zonas</button>
+            <button class="filtro-btn" onclick="setFiltro('zona','BANO_TALLERES',this)">🚻 Baño</button>
+            <button class="filtro-btn" onclick="setFiltro('zona','PORTON',this)">🚪 Portón</button>
           </div>
-          <div class="dev-last">—</div>
-        </div>
-      </div>
-
-      <div class="device-card" id="dev-porton">
-        <div class="dev-icon">🚪</div>
-        <div>
-          <div class="dev-name">Portón / Entrada</div>
-          <div class="dev-mac">ESP32-WROOM · F0:08:D1:F1:AA:2C</div>
-        </div>
-        <div class="dev-right">
-          <div class="dev-status-row">
-            <div class="dev-dot offline"></div>
-            <span class="dev-estado">Sin datos</span>
+          <div class="filtros-group filtro-nivel">
+            <button class="filtro-btn active" onclick="setFiltro('nivel','todos',this)">Todos los niveles</button>
+            <button class="filtro-btn" onclick="setFiltro('nivel',1,this)">🟡 Nivel 1</button>
+            <button class="filtro-btn" onclick="setFiltro('nivel',2,this)">🟠 Nivel 2</button>
+            <button class="filtro-btn" onclick="setFiltro('nivel',3,this)">🔴 Nivel 3</button>
           </div>
-          <div class="dev-last">—</div>
+        </div>
+        <div class="alert-feed" id="alert-feed-full"><div class="empty-state"><div class="empty-icon">📋</div>Cargando...</div></div>
+      </div>
+
+      <!-- TAB DISPOSITIVOS -->
+      <div class="tab-content" id="tab-dispositivos">
+        <div class="section-header"><div class="section-title">Estado en tiempo real</div></div>
+        <div class="device-list">
+          <div class="device-card" id="dev-master">
+            <div class="dev-icon">🖥️</div>
+            <div><div class="dev-name">Master — Sala Profesores</div><div class="dev-mac">ESP8266MOD · D8:BF:C0:F6:9E:F7</div></div>
+            <div class="dev-right"><div class="dev-status-row"><div class="dev-dot online"></div><span class="dev-estado">Online</span></div><div class="dev-last">—</div></div>
+          </div>
+          <div class="device-card" id="dev-bano">
+            <div class="dev-icon">🚻</div>
+            <div><div class="dev-name">Baño de Talleres</div><div class="dev-mac">ZY8266MOD · 48:3F:DA:07:45:2F</div></div>
+            <div class="dev-right"><div class="dev-status-row"><div class="dev-dot offline"></div><span class="dev-estado">Sin datos</span></div><div class="dev-last">—</div></div>
+          </div>
+          <div class="device-card" id="dev-porton">
+            <div class="dev-icon">🚪</div>
+            <div><div class="dev-name">Portón / Entrada</div><div class="dev-mac">ESP32-WROOM · F0:08:D1:F1:AA:2C</div></div>
+            <div class="dev-right"><div class="dev-status-row"><div class="dev-dot offline"></div><span class="dev-estado">Sin datos</span></div><div class="dev-last">—</div></div>
+          </div>
         </div>
       </div>
 
-    </div>
-  </div>
+      <!-- TAB PRECEPTORES -->
+      <div class="tab-content" id="tab-preceptores">
 
-  <!-- TAB HORARIOS -->
-  <div class="tab-content" id="tab-horarios">
-    <div class="section-title">Guardias semanales</div>
-    <div class="schedule-list">
+        <!-- Vista admin: lista de todos -->
+        <div class="admin-only">
+          <div class="section-header">
+            <div class="section-title">Todos los preceptores</div>
+          </div>
+          <div id="preceptores-lista">
+            <div class="empty-state"><div class="empty-icon">👥</div>Cargando...</div>
+          </div>
 
-      <div class="schedule-card">
-        <div class="sched-avatar" style="background:linear-gradient(135deg,#1d4ed8,#0ea5e9)">JP</div>
-        <div>
-          <div class="sched-name">Juan Pérez <span class="badge success" style="font-size:9px;margin-left:4px;">De turno</span></div>
-          <div class="sched-time">13:00 — 19:00</div>
+          <!-- Código de invitación -->
+          <div class="perfil-card" style="margin-top:16px;">
+            <div class="form-label" style="margin-bottom:10px;">🔑 Código de invitación actual</div>
+            <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;font-family:'JetBrains Mono',monospace;font-size:18px;font-weight:700;color:var(--accent);text-align:center;letter-spacing:4px;">
+              EPET2026
+            </div>
+            <div style="font-size:11px;color:var(--text3);margin-top:8px;font-family:'JetBrains Mono',monospace;">
+              Compartí este código con los preceptores para que puedan registrarse.
+            </div>
+          </div>
         </div>
-        <div class="sched-days">
-          <div class="day">L</div><div class="day on">M</div>
-          <div class="day today">X</div><div class="day on">J</div>
-          <div class="day on">V</div>
+
+        <!-- Vista preceptor: mi perfil -->
+        <div class="preceptor-only">
+          <div class="section-header">
+            <div class="section-title">Mi perfil y horario</div>
+          </div>
+          <div id="mi-perfil-section">
+            <div class="empty-state"><div class="empty-icon">👤</div>Cargando tu perfil...</div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- TAB ADMIN -->
+      <div class="tab-content admin-only" id="tab-admin">
+        <div class="section-header"><div class="section-title">Panel de administración</div></div>
+        <div class="device-card" style="flex-direction:column;align-items:flex-start;gap:12px;margin-bottom:12px;">
+          <div><div class="dev-name">🗑️ Gestión de historial</div><div class="dev-mac" style="margin-top:4px;">Solo el admin puede eliminar alertas</div></div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="btn-action warning" onclick="archivarTodas()">📁 Archivar resueltas</button>
+            <button class="btn-action danger"  onclick="borrarHistorial()">🗑️ Borrar todo el historial</button>
+          </div>
+        </div>
+        <div class="device-card" style="flex-direction:column;align-items:flex-start;gap:8px;">
+          <div class="dev-name">📊 Estadísticas rápidas</div>
+          <div class="dev-mac">Total preceptores registrados: <span id="total-precs" style="color:var(--accent);font-weight:700;">—</span></div>
+          <div class="dev-mac">Preceptor de turno ahora: <span id="turno-ahora" style="color:var(--success);font-weight:700;">—</span></div>
         </div>
       </div>
 
-      <div class="schedule-card">
-        <div class="sched-avatar" style="background:linear-gradient(135deg,#8b5cf6,#ec4899)">ML</div>
-        <div>
-          <div class="sched-name">María López</div>
-          <div class="sched-time">07:00 — 13:00</div>
-        </div>
-        <div class="sched-days">
-          <div class="day on">L</div><div class="day on">M</div>
-          <div class="day on">X</div><div class="day on">J</div>
-          <div class="day on">V</div>
-        </div>
-      </div>
+    </div><!-- /content -->
+  </main>
+</div><!-- /app -->
 
-      <div class="schedule-card">
-        <div class="sched-avatar" style="background:linear-gradient(135deg,#f59e0b,#ef4444)">CG</div>
-        <div>
-          <div class="sched-name">Carlos Gil</div>
-          <div class="sched-time">08:00 — 12:00</div>
-        </div>
-        <div class="sched-days">
-          <div class="day">L</div><div class="day">M</div>
-          <div class="day">X</div><div class="day">J</div>
-          <div class="day">V</div><div class="day on">S</div>
-        </div>
-      </div>
-
-    </div>
-  </div>
-
-</div>
-
-<!-- BOTTOM NAV MÓVIL -->
+<!-- BOTTOM NAV -->
 <nav class="bottom-nav">
   <button class="nav-tab active" id="nav-inicio" onclick="showTab('inicio')">
-    <div class="nav-badge-wrap">
-      <span class="nav-tab-icon">📊</span>
-    </div>
-    Inicio
+    <span class="nav-tab-icon">📊</span>Inicio
   </button>
   <button class="nav-tab" id="nav-alertas" onclick="showTab('alertas')">
-    <div class="nav-badge-wrap">
+    <div style="position:relative;display:inline-block;">
       <span class="nav-tab-icon">🚨</span>
       <span class="nav-badge" id="nav-badge">0</span>
     </div>
     Alertas
   </button>
   <button class="nav-tab" id="nav-dispositivos" onclick="showTab('dispositivos')">
-    <span class="nav-tab-icon">📡</span>
-    Devices
+    <span class="nav-tab-icon">📡</span>Devices
   </button>
-  <button class="nav-tab" id="nav-horarios" onclick="showTab('horarios')">
-    <span class="nav-tab-icon">🕐</span>
-    Horarios
+  <button class="nav-tab" id="nav-preceptores" onclick="showTab('preceptores')">
+    <span class="nav-tab-icon">👥</span>Preceptores
   </button>
 </nav>
 
+<!-- MODAL OBSERVACIÓN -->
+<div class="modal-overlay" id="modal-obs" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <div class="modal-title">💬 Agregar observación</div>
+    <input type="hidden" id="obs-id">
+    <textarea class="modal-input" id="obs-texto" placeholder="Describí la situación y las acciones tomadas..."></textarea>
+    <div class="modal-actions">
+      <button class="btn-modal ghost" onclick="$('modal-obs').style.display='none'">Cancelar</button>
+      <button class="btn-modal primary" onclick="guardarObs()">Guardar</button>
+    </div>
+  </div>
+</div>
+
 <script>
-  // Navegación tabs
-  function showTab(tab) {
-    document.querySelectorAll(".tab-content").forEach(t => t.style.display = "none");
-    document.querySelectorAll(".nav-tab").forEach(t => t.classList.remove("active"));
-    document.getElementById(`tab-${tab}`).style.display = "block";
-    const navEl = document.getElementById(`nav-${tab}`);
-    if (navEl) navEl.classList.add("active");
+// Actualizar stats admin
+setInterval(() => {
+  const totalEl = document.getElementById("total-precs");
+  const turnoEl = document.getElementById("turno-ahora");
+  if (totalEl) totalEl.textContent = Object.keys(preceptoresData).length;
+  if (turnoEl) {
+    const p = getPreceptorDeTurno ? getPreceptorDeTurno() : null;
+    turnoEl.textContent = p ? p.nombre : "Ninguno";
   }
-
-  function setDesktopTab(tab) {
-    document.querySelectorAll(".desktop-tab").forEach(t => t.classList.remove("active"));
-    document.getElementById(`dnav-${tab}`).classList.add("active");
-  }
-
-  // Inicializar tab
-  showTab("inicio");
-
-  // PWA Install
-  let deferredPrompt;
-  window.addEventListener("beforeinstallprompt", e => {
-    e.preventDefault();
-    deferredPrompt = e;
-  });
+}, 5000);
 </script>
 </body>
 </html>
+```
